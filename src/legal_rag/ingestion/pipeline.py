@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pymupdf
+from pypdf import PdfReader
 
 from legal_rag.ingestion.chunking import chunk_page
 from legal_rag.ingestion.models import ExtractionMethod, OcrText, PageRecord
@@ -62,11 +63,11 @@ class IngestionPipeline:
         self,
         page: Any,
         *,
+        native_text: str,
         source_file: str,
         document_sha256: str,
         page_number: int,
     ) -> PageRecord:
-        native_text = str(page.get_text("text", sort=False))
         native_quality = measure_text_quality(native_text)
 
         if not requires_ocr(native_quality, self._expected_language):
@@ -146,10 +147,18 @@ class IngestionPipeline:
         processed_pages = 0
 
         with (
+            pdf_path.open("rb") as native_source,
             pymupdf.open(pdf_path) as document,  # type: ignore[no-untyped-call]
             pages_temporary.open("w", encoding="utf-8", newline="\n") as pages_file,
             chunks_temporary.open("w", encoding="utf-8", newline="\n") as chunks_file,
         ):
+            native_document = PdfReader(native_source, strict=False)
+            native_page_count = len(native_document.pages)
+            if document.page_count != native_page_count:
+                raise ValueError(
+                    "PDF page-count mismatch: "
+                    f"PyMuPDF={document.page_count}, pypdf={native_page_count}: {pdf_path}"
+                )
             if document.page_count == 0:
                 raise ValueError(f"PDF contains no readable pages: {pdf_path}")
             stop = document.page_count
@@ -157,8 +166,10 @@ class IngestionPipeline:
                 stop = min(stop, page_limit)
 
             for page_index in range(stop):
+                native_text = native_document.pages[page_index].extract_text() or ""
                 record = self._extract_page(
                     document[page_index],
+                    native_text=native_text,
                     source_file=pdf_path.name,
                     document_sha256=document_sha256,
                     page_number=page_index + 1,
