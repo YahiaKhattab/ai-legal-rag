@@ -25,7 +25,7 @@ class PaddleOcrEngine:
         *,
         language: str = "ar",
         device: str = "cpu",
-        dpi: int = 300,
+        dpi: int = 220,
         minimum_confidence: float = 0.35,
     ) -> None:
         try:
