@@ -73,7 +73,5 @@ class PaddleOcrEngine:
         selected_scores = [
             score for text, score in zip(texts, scores, strict=False) if text.strip()
         ]
-        confidence = (
-            sum(selected_scores) / len(selected_scores) if selected_scores else None
-        )
+        confidence = sum(selected_scores) / len(selected_scores) if selected_scores else None
         return OcrText(text="\n".join(nonempty_texts), mean_confidence=confidence)

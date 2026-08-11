@@ -11,8 +11,7 @@ class FakePage:
         assert output == "rawdict"
         assert sort is False
         chars = [
-            {"c": character, "bbox": (x, 0.0, x + 1.0, 1.0)}
-            for character, x in self._characters
+            {"c": character, "bbox": (x, 0.0, x + 1.0, 1.0)} for character, x in self._characters
         ]
         return {"blocks": [{"lines": [{"spans": [{"chars": chars}]}]}]}
 

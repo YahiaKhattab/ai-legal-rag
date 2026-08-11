@@ -101,9 +101,7 @@ def main() -> int:
     for result in results:
         print(f"{result.status.value.upper():<9} {result.service}: {result.detail}")
 
-    return 0 if all(
-        result.status is HealthStatus.HEALTHY for result in results
-    ) else 1
+    return 0 if all(result.status is HealthStatus.HEALTHY for result in results) else 1
 
 
 if __name__ == "__main__":

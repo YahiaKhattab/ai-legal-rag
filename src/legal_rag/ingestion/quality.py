@@ -28,8 +28,7 @@ def measure_text_quality(text: str) -> TextQuality:
     denominator = max(count, 1)
     arabic_count = sum(_is_arabic(character) for character in compact)
     latin_count = sum(
-        "LATIN" in unicodedata.name(character, "") and character.isalpha()
-        for character in compact
+        "LATIN" in unicodedata.name(character, "") and character.isalpha() for character in compact
     )
     replacement_count = compact.count("\ufffd")
     control_count = sum(unicodedata.category(character) == "Cc" for character in compact)

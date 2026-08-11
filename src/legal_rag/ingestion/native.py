@@ -27,9 +27,7 @@ def uses_right_to_left_digit_storage(page: Any) -> bool:
     for block in raw_page.get("blocks", []):
         for line in block.get("lines", []):
             characters = [
-                character
-                for span in line.get("spans", [])
-                for character in span.get("chars", [])
+                character for span in line.get("spans", []) for character in span.get("chars", [])
             ]
             for left, right in pairwise(characters):
                 if left.get("c") not in _ARABIC_DIGITS:
