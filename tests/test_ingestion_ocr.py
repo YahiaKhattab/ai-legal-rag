@@ -57,7 +57,7 @@ def test_extracts_nonempty_lines_and_mean_confidence(
         predictor_options,
     )
 
-    engine = PaddleOcrEngine(dpi=300, minimum_confidence=0.4)
+    engine = PaddleOcrEngine(minimum_confidence=0.4)
     result = engine.extract_page(FakePage())
 
     assert predictor_options["text_recognition_model_name"] == "arabic_PP-OCRv5_mobile_rec"
