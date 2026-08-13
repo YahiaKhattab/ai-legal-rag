@@ -8,10 +8,12 @@ from typing import Any
 
 
 class ExtractionMethod(StrEnum):
-    """How the selected page text was obtained."""
+    """How selected source text was obtained."""
 
     NATIVE = "native"
     OCR = "ocr"
+    DOCX = "docx"
+    TXT = "txt"
     FAILED = "failed"
 
 
@@ -30,6 +32,22 @@ class SectionType(StrEnum):
     CHAPTER = "chapter"
     SECTION = "section"
     ARTICLE = "article"
+
+
+class SourceFormat(StrEnum):
+    """Supported input document formats."""
+
+    PDF = "pdf"
+    DOCX = "docx"
+    TXT = "txt"
+
+
+class LocatorType(StrEnum):
+    """Source coordinate system used for citations."""
+
+    PAGE = "page"
+    BLOCK = "block"
+    LINE = "line"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +77,7 @@ class DocumentMetadata:
     source: str
     source_file: str
     file_hash: str
+    source_format: SourceFormat = SourceFormat.PDF
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,19 +96,34 @@ class OcrText:
 
 
 @dataclass(frozen=True, slots=True)
-class PageRecord:
-    """Extraction evidence for one source page.
+class SourceSegment:
+    """Map a source locator to a character span in one extracted record."""
 
-    native_text always preserves the PDF text layer. original_text is the exact
-    text selected for downstream use: native text or OCR output. Normalization
-    never mutates either field.
+    start_char: int
+    end_char: int
+    locator_start: int
+    locator_end: int
+    kind: str
+
+    def __post_init__(self) -> None:
+        if self.start_char < 0 or self.end_char < self.start_char:
+            raise ValueError("invalid source-segment character range")
+        if self.locator_start <= 0 or self.locator_end < self.locator_start:
+            raise ValueError("invalid source-segment locator range")
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRecord:
+    """Extraction evidence for one independently processed source record.
+
+    For PDF, a record is one page. DOCX and TXT use one continuous document
+    record plus source segments that map chunks back to blocks or lines.
     """
 
     source_file: str
     document_id: str
     document_version: int
     file_hash: str
-    page_number: int
     extraction_method: ExtractionMethod
     native_text: str
     original_text: str
@@ -97,6 +131,12 @@ class PageRecord:
     native_quality: TextQuality
     selected_quality: TextQuality
     language: str
+    source_format: SourceFormat = SourceFormat.PDF
+    locator_type: LocatorType = LocatorType.PAGE
+    locator_start: int = 1
+    locator_end: int = 1
+    page_number: int | None = None
+    source_segments: tuple[SourceSegment, ...] = ()
     ocr_mean_confidence: float | None = None
     error: str | None = None
     native_rtl_digit_correction_applied: bool = False
@@ -104,7 +144,13 @@ class PageRecord:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["extraction_method"] = self.extraction_method.value
+        data["source_format"] = self.source_format.value
+        data["locator_type"] = self.locator_type.value
         return data
+
+
+# Backward-compatible Python name while callers migrate to SourceRecord.
+PageRecord = SourceRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,8 +165,12 @@ class ChunkRecord:
     normalized_text: str
     section_type: SectionType
     section_title: str | None
-    page_start: int
-    page_end: int
+    page_start: int | None
+    page_end: int | None
+    source_format: SourceFormat
+    locator_type: LocatorType
+    locator_start: int
+    locator_end: int
     language: str
     document_type: str
     source: str
@@ -136,5 +186,7 @@ class ChunkRecord:
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["section_type"] = self.section_type.value
+        data["source_format"] = self.source_format.value
+        data["locator_type"] = self.locator_type.value
         data["extraction_methods"] = [method.value for method in self.extraction_methods]
         return data

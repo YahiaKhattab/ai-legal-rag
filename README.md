@@ -7,6 +7,7 @@ English legal and regulatory documents.
 
 The repository currently implements:
 
+- PDF, DOCX, and UTF-8 TXT ingestion behind format-specific extractors.
 - Native PDF extraction using pypdf.
 - PyMuPDF rendering and right-to-left digit-coordinate analysis.
 - Conditional PaddleOCR fallback for low-quality pages.
@@ -15,7 +16,8 @@ The repository currently implements:
 - Conservative Arabic/English legal-structure detection.
 - Token-aware chunking using the exact Multilingual E5 Base tokenizer.
 - Stable document/chunk identities and duplicate reuse by SHA-256.
-- Atomic JSONL page/chunk persistence plus a document ingestion report.
+- Format-aware page, block, or line citations.
+- Atomic JSONL source/chunk persistence plus a document ingestion report.
 - Qdrant and Ollama health checks.
 
 Embeddings, vector indexing, retrieval, reranking, prompting, and answer
@@ -91,15 +93,15 @@ To stop Qdrant without deleting its volume:
 docker compose down
 ~~~
 
-## PDF ingestion
+## Document ingestion
 
-Place approved local PDFs under `data/input/`. This directory is ignored by Git.
+Place approved local `.pdf`, `.docx`, and `.txt` files under `data/input/`. This
+directory is ignored by Git. TXT input must be UTF-8.
 
-Ingest one PDF with explicit provenance:
+Ingest one document with explicit provenance:
 
 ~~~powershell
 legal-rag-ingest ".\data\input\example.pdf" `
-    --language ar `
     --document-type law `
     --source "Central Bank of Egypt"
 ~~~
@@ -107,55 +109,73 @@ legal-rag-ingest ".\data\input\example.pdf" `
 Use `unknown` only when the document type or issuing source has not yet been
 verified. The pipeline never guesses either value.
 
-Ingest every PDF in the input directory:
+Ingest every supported document in the input directory:
 
 ~~~powershell
 legal-rag-ingest ".\data\input"
 ~~~
 
-Process only the first N pages:
+For PDF development runs, process only the first N pages:
 
 ~~~powershell
 legal-rag-ingest ".\data\input\example.pdf" --pages 13
 ~~~
 
-Select the expected language and output directory:
+Automatic Arabic/English detection is the default. Use `--language ar` or
+`--language en` only as a troubleshooting override. Select an output directory:
 
 ~~~powershell
 legal-rag-ingest ".\data\input\example.pdf" `
-    --language auto `
     --output ".\data\processed"
 ~~~
+
+Detected source and chunk language is persisted as `ar`, `en`, `mixed`, or
+`unknown`. Mixed DOCX/TXT and native PDF content is classified from Unicode
+script evidence, and mixed source records are classified again per chunk.
+When a scanned PDF has no usable text signal, the pipeline probes lightweight
+Arabic and English OCR sequentially, selects the valid result, and reuses that
+choice for later scan pages. An explicit language override remains useful for
+unusual or heavily mixed scanned documents.
 
 The default chunking contract is a 400-token target, 60-token overlap, and a
 480-token hard maximum. The count includes the `passage: ` prefix required by
 Multilingual E5 Base. The model limit is 512 tokens.
 
-The first ingestion may download only the pinned E5 tokenizer files. PDF text
-is processed locally and is never sent to the model host. Later runs use the
-local tokenizer cache.
+The first ingestion may download only the pinned E5 tokenizer files. Document
+text is processed locally and is never sent to the model host. Later runs use
+the local tokenizer cache.
+
+Format behavior is intentionally limited:
+
+- PDF uses native text with page-level OCR fallback when quality is poor.
+- DOCX reads body paragraphs and table rows in document order; embedded image
+  OCR, headers, footers, comments, and legacy `.doc` are not included.
+- TXT reads UTF-8 text and preserves line ranges. Binary or legacy-encoded text
+  is rejected instead of guessed.
 
 ## Generated files
 
 Artifacts use a stable prefix derived from the full file SHA-256:
 
-- `data/processed/document-<hash-prefix>.pages.jsonl`
+- `data/processed/document-<hash-prefix>.sources.jsonl`
 - `data/processed/document-<hash-prefix>.chunks.jsonl`
 - `data/processed/document-<hash-prefix>.ingestion.json`
 
 A `--pages N` development run adds `-first-N` to the artifact prefix so a
 partial test cannot overwrite the complete document outputs.
 
-Page records distinguish:
+Source records distinguish:
 
-- `native_text`: untouched PDF text-layer output.
-- `original_text`: exact selected native or OCR evidence.
+- `native_text`: untouched extractor output.
+- `original_text`: exact selected source evidence.
 - `normalized_text`: retrieval-oriented text derived without mutating either
   original field.
 
 Chunk records include the original and normalized text, legal section metadata,
-page/character citation spans, source provenance, extraction methods, the exact
-token count, the pinned tokenizer identity, and the pipeline version.
+source provenance, extraction methods, the exact token count, the pinned
+tokenizer identity, and the pipeline version. Citation coordinates are pages
+for PDF, ordered blocks for DOCX, and lines for TXT. PDF chunks also retain
+`page_start` and `page_end` for compatibility.
 
 The ingestion report records document identity, configuration, counts, and
 artifact names. Reprocessing identical bytes with identical metadata and
@@ -183,7 +203,7 @@ Configured test coverage must remain at or above 80%.
 The repository intentionally excludes:
 
 - `.env` files and secrets
-- Input PDFs
+- Input documents
 - Extracted and processed data
 - Virtual environments and caches
 - Logs and local models
@@ -199,7 +219,7 @@ Create a focused branch for each change:
 ~~~powershell
 git switch main
 git pull --ff-only
-git switch -c feature/short-description
+git switch -c yahia/short-description
 ~~~
 
 Run the quality gate, commit, push the branch, and open a pull request to

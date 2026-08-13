@@ -6,7 +6,7 @@ from typing import Any
 import pymupdf
 import pytest
 
-import legal_rag.ingestion.pipeline as pipeline_module
+import legal_rag.ingestion.extractors as extractors_module
 from legal_rag.ingestion.models import (
     DocumentMetadata,
     ExtractionMethod,
@@ -127,6 +127,10 @@ def test_pipeline_routes_pages_and_writes_full_contract(tmp_path: Path) -> None:
         "section_title",
         "page_start",
         "page_end",
+        "source_format",
+        "locator_type",
+        "locator_start",
+        "locator_end",
         "language",
         "document_type",
         "source",
@@ -242,7 +246,7 @@ def test_pipeline_rejects_page_count_mismatch(
 ) -> None:
     pdf_path = tmp_path / "mismatched.pdf"
     _make_pdf(pdf_path)
-    monkeypatch.setattr(pipeline_module, "PdfReader", MismatchedPdfReader)
+    monkeypatch.setattr(extractors_module, "PdfReader", MismatchedPdfReader)
 
     with pytest.raises(ValueError, match="page-count mismatch"):
         _pipeline(ocr_engine=FakeOcrEngine()).ingest(pdf_path, tmp_path / "processed")

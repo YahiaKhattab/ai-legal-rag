@@ -27,17 +27,25 @@ def test_parser_exposes_provenance_and_token_contract() -> None:
 
     assert arguments.document_type == "regulation"
     assert arguments.source == "Test Authority"
+    assert arguments.language == "auto"
     assert arguments.target_tokens == 350
     assert arguments.overlap_tokens == 50
     assert arguments.maximum_tokens == 470
 
 
-def test_expand_inputs_sorts_only_pdf_files(tmp_path: Path) -> None:
+def test_expand_inputs_sorts_supported_document_files(tmp_path: Path) -> None:
     (tmp_path / "b.pdf").touch()
     (tmp_path / "a.pdf").touch()
     (tmp_path / "notes.txt").touch()
+    (tmp_path / "rules.docx").touch()
+    (tmp_path / "legacy.doc").touch()
 
-    assert _expand_inputs([tmp_path]) == [tmp_path / "a.pdf", tmp_path / "b.pdf"]
+    assert _expand_inputs([tmp_path]) == [
+        tmp_path / "a.pdf",
+        tmp_path / "b.pdf",
+        tmp_path / "notes.txt",
+        tmp_path / "rules.docx",
+    ]
 
 
 def test_main_reports_processed_document(
@@ -50,7 +58,7 @@ def test_main_reports_processed_document(
 
     class FakePipeline:
         def __init__(self, **options: object) -> None:
-            assert options["expected_language"] == "ar"
+            assert options["expected_language"] == "auto"
 
         def ingest(
             self,
@@ -64,12 +72,12 @@ def test_main_reports_processed_document(
                 status=IngestionStatus.PROCESSED,
                 source_file=path.name,
                 document_id="a" * 64,
-                processed_pages=2,
-                native_pages=1,
-                ocr_pages=1,
-                failed_pages=0,
+                processed_records=2,
+                direct_records=1,
+                ocr_records=1,
+                failed_records=0,
                 chunks=3,
-                pages_output=output / "pages.jsonl",
+                sources_output=output / "sources.jsonl",
                 chunks_output=output / "chunks.jsonl",
                 report_output=output / "report.json",
             )
@@ -90,5 +98,17 @@ def test_main_rejects_empty_directory(
 ) -> None:
     monkeypatch.setattr("sys.argv", ["legal-rag-ingest", str(tmp_path)])
 
-    with pytest.raises(SystemExit, match="No PDF files found"):
+    with pytest.raises(SystemExit, match="No supported PDF, DOCX, or TXT files found"):
+        cli_module.main()
+
+
+def test_pages_rejects_non_pdf_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    txt_path = tmp_path / "law.txt"
+    txt_path.write_text("legal text", encoding="utf-8")
+    monkeypatch.setattr("sys.argv", ["legal-rag-ingest", str(txt_path), "--pages", "1"])
+
+    with pytest.raises(SystemExit, match="every input is PDF"):
         cli_module.main()

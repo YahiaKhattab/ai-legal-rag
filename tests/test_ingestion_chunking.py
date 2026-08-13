@@ -5,8 +5,12 @@ from legal_rag.ingestion.models import (
     ChunkingConfig,
     DocumentMetadata,
     ExtractionMethod,
+    LocatorType,
     PageRecord,
     SectionType,
+    SourceFormat,
+    SourceRecord,
+    SourceSegment,
     TextQuality,
 )
 from legal_rag.ingestion.structure import LegalStructureDetector
@@ -138,3 +142,50 @@ def test_failed_page_produces_no_structure_or_chunks() -> None:
 
     assert LegalStructureDetector().detect_page(failed) == []
     assert SectionType.ARTICLE.value == "article"
+
+
+def test_chunk_uses_exact_non_pdf_locator_range() -> None:
+    text = "Article one\nFirst rule\nSecond rule"
+    source = SourceRecord(
+        source_file="law.txt",
+        document_id="a" * 64,
+        document_version=1,
+        file_hash="a" * 64,
+        extraction_method=ExtractionMethod.TXT,
+        native_text=text,
+        original_text=text,
+        normalized_text=text,
+        native_quality=_QUALITY,
+        selected_quality=_QUALITY,
+        language="en",
+        source_format=SourceFormat.TXT,
+        locator_type=LocatorType.LINE,
+        locator_start=1,
+        locator_end=3,
+        source_segments=(
+            SourceSegment(0, 12, 1, 1, "line"),
+            SourceSegment(12, 23, 2, 2, "line"),
+            SourceSegment(23, len(text), 3, 3, "line"),
+        ),
+    )
+    metadata = DocumentMetadata(
+        document_id="a" * 64,
+        document_version=1,
+        document_type="law",
+        source="Official Gazette",
+        source_file="law.txt",
+        file_hash="a" * 64,
+        source_format=SourceFormat.TXT,
+    )
+
+    [chunk] = chunk_page_sections(
+        source,
+        LegalStructureDetector().detect_source(source),
+        metadata,
+        WordTokenCounter(),
+    )
+
+    assert chunk.page_start is None
+    assert chunk.page_end is None
+    assert chunk.locator_type is LocatorType.LINE
+    assert (chunk.locator_start, chunk.locator_end) == (1, 3)

@@ -1,17 +1,17 @@
 # Ingestion Architecture
 
-This is the short code tour for the extraction → OCR → normalization →
-structure detection → chunking pipeline.
+This is the short code tour for the multi-format extraction → normalization →
+structure detection → chunking pipeline. OCR is a PDF-only fallback.
 
 ## Data flow
 
-1. `cli.py` parses paths, provenance, language, and chunk limits.
-2. `validation.py` checks the PDF and computes SHA-256.
-3. `pipeline.py` selects native text or OCR page by page.
+1. `cli.py` parses paths, provenance, optional language override, and chunk limits.
+2. `validation.py` identifies and validates PDF, DOCX, or UTF-8 TXT and computes SHA-256.
+3. `pipeline.py` selects the matching adapter from `extractors.py`.
 4. `normalization.py` derives retrieval text while originals stay immutable.
 5. `structure.py` finds legal boundaries and carries headings across pages.
 6. `chunking.py` splits only inside a section and enforces the E5 limit.
-7. `pipeline.py` atomically writes pages, chunks, and the ingestion report.
+7. `pipeline.py` atomically writes sources, chunks, and the ingestion report.
 
 ## Module responsibilities
 
@@ -20,19 +20,36 @@ structure detection → chunking pipeline.
 Defines persisted contracts and contains no extraction or chunking logic.
 Central contracts make future Qdrant payload changes easy to review.
 
-- `native_text`: exact output from the PDF text layer, even when corrupt.
-- `original_text`: exact selected native or OCR evidence.
+- `native_text`: exact extractor output, including a corrupt PDF text layer.
+- `original_text`: exact selected native, OCR, DOCX, or TXT evidence.
 - `normalized_text`: deterministic search form derived from the original.
+
+Every source and chunk also carries `source_format`, `locator_type`, and an
+inclusive locator range. PDFs use pages, DOCX uses ordered blocks, and TXT uses
+lines. `SourceSegment` maps continuous DOCX/TXT text back to those coordinates.
 
 ### `validation.py`
 
-Rejects missing, renamed, empty, oversized, encrypted, unreadable, and
-zero-page PDFs. It computes the content hash used as `document_id`.
+Rejects missing, renamed, empty, oversized, encrypted, malformed, or unreadable
+inputs. PDF signatures/pages, DOCX package parts, and UTF-8 TXT content are
+checked before extraction. It computes the content hash used as `document_id`.
+
+### `extractors.py`
+
+Implements the common `DocumentExtractor` contract:
+
+- `PdfExtractor`: one record per page; native text plus conditional OCR.
+- `DocxExtractor`: one continuous record with paragraph/table-row block spans.
+- `TxtExtractor`: one continuous record with line spans.
+
+Keeping adapters separate lets every format share structure detection,
+normalization, chunking, persistence, and future embeddings.
 
 ### `quality.py`
 
-Measures script ratios and corruption indicators. The pipeline uses this
-evidence to decide whether a page needs OCR.
+Measures script ratios and corruption indicators. It deterministically labels
+selected text as `ar`, `en`, `mixed`, or `unknown`; no filename or external
+language service is used. The same evidence decides whether a PDF page needs OCR.
 
 ### `native.py`
 
@@ -43,7 +60,11 @@ in the representative documents.
 ### `ocr.py`
 
 Adapts PaddleOCR behind `OcrEngine`. Other modules do not depend directly on
-PaddleOCR APIs, keeping OCR replaceable and unit-testable.
+PaddleOCR APIs, keeping OCR replaceable and unit-testable. Automatic mode uses
+native script evidence when available. For a scan without usable text, it probes
+the lightweight Arabic and English recognizers sequentially, selects a valid
+result using script evidence, confidence, and length, then caches that language
+for later scan pages. Explicit `ar` and `en` overrides remain available.
 
 ### `normalization.py`
 
@@ -73,7 +94,9 @@ then whitespace boundaries. Defaults:
 - Hard maximum: 480 tokens including E5 special tokens and `passage: `
 
 Every ID depends only on stable document identity, version, pipeline version,
-section, page, and source offsets. Reprocessing reproduces IDs.
+format, locator type, section, and source offsets. Reprocessing reproduces IDs.
+When a continuous source is bilingual, language is classified again for each
+chunk so Arabic and English sections retain accurate embedding metadata.
 
 ### `pipeline.py`
 
@@ -83,16 +106,17 @@ ingestion only when its artifacts and exact configuration are complete.
 
 ## Persisted artifacts
 
-`*.pages.jsonl` is extraction evidence and quality diagnostics.
+`*.sources.jsonl` is extraction evidence, source mappings, and quality diagnostics.
 
 `*.chunks.jsonl` is the future embedding/Qdrant input and citation payload.
 
 `*.ingestion.json` is the completion marker, configuration record, and
 document-level summary.
 
-## Why chunks stay page-bounded
+## Citation boundaries
 
-Page-bounded chunks make legal citations unambiguous and preserve exact source
-offsets. A long article can span pages: `structure.py` carries its title
-forward, while `chunking.py` does not merge page text. Retrieval can still
-return multiple chunks from the same article later.
+PDF chunks remain page-bounded, which keeps citations unambiguous. DOCX and TXT
+are processed as continuous text so chunk quality is not damaged by short
+paragraphs or lines; source-segment intersections still produce exact block or
+line ranges. The pipeline never invents page numbers for formats that do not
+provide stable pages.

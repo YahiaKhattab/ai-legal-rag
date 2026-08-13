@@ -8,6 +8,7 @@ from typing import Literal
 from legal_rag.ingestion.models import TextQuality
 
 ExpectedLanguage = Literal["ar", "en", "auto"]
+DetectedLanguage = Literal["ar", "en", "mixed", "unknown"]
 
 _ARABIC_RANGES = (
     ("\u0600", "\u06ff"),
@@ -42,6 +43,38 @@ def measure_text_quality(text: str) -> TextQuality:
     )
 
 
+def detect_language(
+    quality: TextQuality,
+    *,
+    minimum_script_characters: int = 3,
+    mixed_minimum_share: float = 0.20,
+) -> DetectedLanguage:
+    """Classify Arabic/Latin script evidence without guessing from filenames."""
+
+    script_ratio = quality.arabic_ratio + quality.latin_ratio
+    script_characters = round(quality.character_count * script_ratio)
+    if script_characters < minimum_script_characters or script_ratio == 0:
+        return "unknown"
+
+    arabic_share = quality.arabic_ratio / script_ratio
+    if arabic_share >= 1 - mixed_minimum_share:
+        return "ar"
+    if arabic_share <= mixed_minimum_share:
+        return "en"
+    return "mixed"
+
+
+def resolve_language(
+    expected_language: ExpectedLanguage,
+    quality: TextQuality,
+) -> DetectedLanguage:
+    """Honor an explicit override or automatically classify selected text."""
+
+    if expected_language != "auto":
+        return expected_language
+    return detect_language(quality)
+
+
 def requires_ocr(
     quality: TextQuality,
     expected_language: ExpectedLanguage = "ar",
@@ -58,4 +91,4 @@ def requires_ocr(
         return quality.arabic_ratio < minimum_script_ratio
     if expected_language == "en":
         return quality.latin_ratio < minimum_script_ratio
-    return max(quality.arabic_ratio, quality.latin_ratio) < minimum_script_ratio
+    return quality.arabic_ratio + quality.latin_ratio < minimum_script_ratio

@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
-from legal_rag.ingestion.models import ExtractionMethod, PageRecord, SectionType
+from legal_rag.ingestion.models import ExtractionMethod, SectionType, SourceRecord
 from legal_rag.ingestion.normalization import normalize_text
 
 _ARABIC_SECTION = re.compile(r"^(?P<label>الباب|الفصل|القسم|الكتاب|الجزء)\b")
@@ -41,7 +41,7 @@ class LineClassification:
 class SectionSpan:
     """A contiguous page slice that never crosses a legal section boundary."""
 
-    page_number: int
+    page_number: int | None
     start_char: int
     end_char: int
     section_type: SectionType
@@ -101,8 +101,8 @@ class LegalStructureDetector:
         self._section_type = SectionType.DOCUMENT
         self._section_title: str | None = None
 
-    def detect_page(self, page: PageRecord) -> list[SectionSpan]:
-        if page.extraction_method is ExtractionMethod.FAILED or not page.original_text.strip():
+    def detect_source(self, source: SourceRecord) -> list[SectionSpan]:
+        if source.extraction_method is ExtractionMethod.FAILED or not source.original_text.strip():
             return []
 
         spans: list[SectionSpan] = []
@@ -110,16 +110,16 @@ class LegalStructureDetector:
         preferred_breaks: list[int] = []
         offset = 0
 
-        for line in page.original_text.splitlines(keepends=True):
+        for line in source.original_text.splitlines(keepends=True):
             line_start = offset
             offset += len(line)
             classification = classify_line(line)
 
             if classification.section_type is not None:
-                if page.original_text[span_start:line_start].strip():
+                if source.original_text[span_start:line_start].strip():
                     spans.append(
                         SectionSpan(
-                            page_number=page.page_number,
+                            page_number=source.page_number,
                             start_char=span_start,
                             end_char=line_start,
                             section_type=self._section_type,
@@ -136,12 +136,12 @@ class LegalStructureDetector:
             elif not line.strip():
                 preferred_breaks.append(offset)
 
-        if offset < len(page.original_text):
-            offset = len(page.original_text)
-        if page.original_text[span_start:offset].strip():
+        if offset < len(source.original_text):
+            offset = len(source.original_text)
+        if source.original_text[span_start:offset].strip():
             spans.append(
                 SectionSpan(
-                    page_number=page.page_number,
+                    page_number=source.page_number,
                     start_char=span_start,
                     end_char=offset,
                     section_type=self._section_type,
@@ -150,3 +150,8 @@ class LegalStructureDetector:
                 )
             )
         return spans
+
+    def detect_page(self, page: SourceRecord) -> list[SectionSpan]:
+        """Compatibility wrapper for the former PDF-only API."""
+
+        return self.detect_source(page)

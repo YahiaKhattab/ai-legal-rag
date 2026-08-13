@@ -8,26 +8,27 @@ from legal_rag.ingestion.models import (
     ChunkingConfig,
     ChunkRecord,
     DocumentMetadata,
-    PageRecord,
+    SourceRecord,
 )
 from legal_rag.ingestion.normalization import normalize_text
+from legal_rag.ingestion.quality import detect_language, measure_text_quality
 from legal_rag.ingestion.structure import SectionSpan
 from legal_rag.ingestion.tokenization import TokenCounter
 
-PIPELINE_VERSION = "1.0.0"
+PIPELINE_VERSION = "1.2.0"
 DEFAULT_CHUNKING_CONFIG = ChunkingConfig()
 _SENTENCE_ENDINGS = frozenset("\n.؟!؛;")
 
 
-def _normalized_slice(page: PageRecord, start: int, end: int) -> str:
+def _normalized_slice(source: SourceRecord, start: int, end: int) -> str:
     return normalize_text(
-        page.original_text[start:end],
-        reverse_arabic_digit_runs=page.native_rtl_digit_correction_applied,
+        source.original_text[start:end],
+        reverse_arabic_digit_runs=source.native_rtl_digit_correction_applied,
     )
 
 
 def _maximum_end(
-    page: PageRecord,
+    page: SourceRecord,
     *,
     start: int,
     section_end: int,
@@ -66,7 +67,7 @@ def _candidate_breaks(
 
 
 def _choose_end(
-    page: PageRecord,
+    page: SourceRecord,
     span: SectionSpan,
     *,
     start: int,
@@ -100,7 +101,7 @@ def _choose_end(
 
 
 def _next_start(
-    page: PageRecord,
+    page: SourceRecord,
     *,
     section_start: int,
     end: int,
@@ -127,8 +128,19 @@ def _next_start(
     return min(best, end)
 
 
-def chunk_page_sections(
-    page: PageRecord,
+def _locator_range(source: SourceRecord, start: int, end: int) -> tuple[int, int]:
+    intersecting = [
+        segment
+        for segment in source.source_segments
+        if segment.end_char > start and segment.start_char < end
+    ]
+    if not intersecting:
+        return source.locator_start, source.locator_end
+    return intersecting[0].locator_start, intersecting[-1].locator_end
+
+
+def chunk_source_sections(
+    page: SourceRecord,
     spans: list[SectionSpan],
     metadata: DocumentMetadata,
     token_counter: TokenCounter,
@@ -136,7 +148,7 @@ def chunk_page_sections(
     starting_index: int = 0,
     config: ChunkingConfig = DEFAULT_CHUNKING_CONFIG,
 ) -> list[ChunkRecord]:
-    """Split page-local legal sections without merging unrelated boundaries."""
+    """Split one source record without merging unrelated legal boundaries."""
 
     chunks: list[ChunkRecord] = []
     for span in spans:
@@ -161,12 +173,17 @@ def chunk_page_sections(
                 chunk_index = starting_index + len(chunks)
                 identity = (
                     f"{metadata.document_id}:{metadata.document_version}:"
-                    f"{PIPELINE_VERSION}:{page.page_number}:{actual_start}:{actual_end}:"
+                    f"{PIPELINE_VERSION}:{page.source_format.value}:"
+                    f"{page.locator_type.value}:{actual_start}:{actual_end}:"
                     f"{span.section_type.value}:{span.section_title or ''}"
                 )
+                locator_start, locator_end = _locator_range(page, actual_start, actual_end)
                 token_count = token_counter.count_passage(normalized)
                 if token_count > config.maximum_tokens:
                     raise AssertionError("Chunk exceeded the hard token maximum")
+                language = page.language
+                if language in ("mixed", "unknown"):
+                    language = detect_language(measure_text_quality(normalized))
                 chunks.append(
                     ChunkRecord(
                         chunk_id=hashlib.sha256(identity.encode("utf-8")).hexdigest(),
@@ -179,7 +196,11 @@ def chunk_page_sections(
                         section_title=span.section_title,
                         page_start=page.page_number,
                         page_end=page.page_number,
-                        language=page.language,
+                        source_format=page.source_format,
+                        locator_type=page.locator_type,
+                        locator_start=locator_start,
+                        locator_end=locator_end,
+                        language=language,
                         document_type=metadata.document_type,
                         source=metadata.source,
                         source_file=metadata.source_file,
@@ -205,3 +226,7 @@ def chunk_page_sections(
             start = max(next_start, start + 1)
 
     return chunks
+
+
+# Compatibility name retained for callers of the PDF-only pipeline.
+chunk_page_sections = chunk_source_sections
