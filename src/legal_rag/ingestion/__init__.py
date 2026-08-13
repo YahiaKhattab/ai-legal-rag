@@ -1,4 +1,4 @@
-"""PDF extraction, OCR routing, normalization, and chunking."""
+"""PDF, DOCX, and TXT extraction, normalization, and legal chunking."""
 
 from legal_rag.ingestion.pipeline import IngestionPipeline, IngestionSummary
 

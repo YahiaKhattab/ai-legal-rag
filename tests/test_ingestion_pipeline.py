@@ -1,13 +1,29 @@
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
 import pymupdf
 import pytest
 
-import legal_rag.ingestion.pipeline as pipeline_module
-from legal_rag.ingestion.models import ExtractionMethod, OcrText
+import legal_rag.ingestion.extractors as extractors_module
+from legal_rag.ingestion.models import (
+    DocumentMetadata,
+    ExtractionMethod,
+    IngestionStatus,
+    OcrText,
+)
 from legal_rag.ingestion.pipeline import IngestionPipeline
+
+
+class WordTokenCounter:
+    name = "test-word-counter"
+
+    def count_passage(self, text: str) -> int:
+        return len(text.split()) + 3
+
+    def count_content(self, text: str) -> int:
+        return len(text.split())
 
 
 class FakeOcrEngine:
@@ -39,8 +55,6 @@ class MismatchedPdfReader:
 class RtlNativePage:
     def get_text(self, output: str, *, sort: bool) -> Any:
         assert sort is False
-        if output == "text":
-            return "قانون رقم ٠٢ لسنة ٤٢٠٢ " * 8
         if output == "rawdict":
             chars = [
                 {"c": character, "bbox": (x, 0.0, x + 1.0, 1.0)}
@@ -48,6 +62,17 @@ class RtlNativePage:
             ]
             return {"blocks": [{"lines": [{"spans": [{"chars": chars}]}]}]}
         raise AssertionError(f"Unexpected output format: {output}")
+
+
+def _metadata() -> DocumentMetadata:
+    return DocumentMetadata(
+        document_id="a" * 64,
+        document_version=1,
+        document_type="law",
+        source="Official Gazette",
+        source_file="law.pdf",
+        file_hash="a" * 64,
+    )
 
 
 def _make_pdf(path: Path) -> None:
@@ -58,92 +83,161 @@ def _make_pdf(path: Path) -> None:
         document.save(path)
 
 
-def test_pipeline_routes_pages_and_writes_jsonl(tmp_path: Path) -> None:
+def _pipeline(*, ocr_engine: Any = None) -> IngestionPipeline:
+    return IngestionPipeline(
+        expected_language="en",
+        ocr_engine=ocr_engine,
+        token_counter=WordTokenCounter(),
+    )
+
+
+def test_pipeline_routes_pages_and_writes_full_contract(tmp_path: Path) -> None:
     pdf_path = tmp_path / "sample.pdf"
     _make_pdf(pdf_path)
-    pipeline = IngestionPipeline(expected_language="en", ocr_engine=FakeOcrEngine())
 
-    summary = pipeline.ingest(pdf_path, tmp_path / "processed")
+    summary = _pipeline(ocr_engine=FakeOcrEngine()).ingest(
+        pdf_path,
+        tmp_path / "processed",
+        document_type="law",
+        source="Test Authority",
+    )
 
+    assert summary.status is IngestionStatus.PROCESSED
     assert summary.native_pages == 1
     assert summary.ocr_pages == 1
     assert summary.failed_pages == 0
-    records = [
+    page_records = [
         json.loads(line) for line in summary.pages_output.read_text(encoding="utf-8").splitlines()
     ]
-    assert [record["extraction_method"] for record in records] == ["native", "ocr"]
-    assert all(record["document_sha256"] for record in records)
+    assert [record["extraction_method"] for record in page_records] == ["native", "ocr"]
+    assert page_records[0]["native_text"] == page_records[0]["original_text"]
+    assert page_records[1]["native_text"] == ""
+    assert page_records[1]["original_text"].startswith("Recognized legal text")
+
+    chunk_records = [
+        json.loads(line) for line in summary.chunks_output.read_text(encoding="utf-8").splitlines()
+    ]
+    required = {
+        "chunk_id",
+        "document_id",
+        "document_version",
+        "chunk_index",
+        "original_text",
+        "normalized_text",
+        "section_title",
+        "page_start",
+        "page_end",
+        "source_format",
+        "locator_type",
+        "locator_start",
+        "locator_end",
+        "language",
+        "document_type",
+        "source",
+        "file_hash",
+        "extraction_methods",
+        "token_count",
+        "pipeline_version",
+    }
+    assert required <= chunk_records[0].keys()
+    assert [record["chunk_index"] for record in chunk_records] == list(range(len(chunk_records)))
+    assert summary.report_output.is_file()
 
 
-def test_pipeline_corrects_native_digits_only_with_coordinate_evidence() -> None:
-    pipeline = IngestionPipeline(expected_language="ar")
+def test_pipeline_corrects_native_digits_without_mutating_original() -> None:
+    pipeline = IngestionPipeline(expected_language="ar", token_counter=WordTokenCounter())
+    native_text = ("قانون رقم ٠٢ لسنة ٤٢٠٢ ") * 8
 
     record = pipeline._extract_page(
         RtlNativePage(),
-        native_text=(
-            "\u0642\u0627\u0646\u0648\u0646 \u0631\u0642\u0645 \u0660\u0662 "
-            "\u0644\u0633\u0646\u0629 \u0664\u0662\u0660\u0662 "
-        )
-        * 8,
-        source_file="law.pdf",
-        document_sha256="a" * 64,
+        native_text=native_text,
+        metadata=_metadata(),
         page_number=1,
     )
 
     assert record.extraction_method is ExtractionMethod.NATIVE
     assert record.native_rtl_digit_correction_applied
+    assert record.original_text == native_text
     assert "قانون رقم ٢٠ لسنة ٢٠٢٤" in record.normalized_text
 
 
-def test_pipeline_rejects_low_quality_ocr_output(tmp_path: Path) -> None:
+def test_pipeline_rejects_low_quality_ocr_and_preserves_native_layer(
+    tmp_path: Path,
+) -> None:
     pdf_path = tmp_path / "low-quality-ocr.pdf"
     _make_pdf(pdf_path)
-    pipeline = IngestionPipeline(
-        expected_language="en",
-        ocr_engine=LowQualityOcrEngine(),
+
+    summary = _pipeline(ocr_engine=LowQualityOcrEngine()).ingest(
+        pdf_path,
+        tmp_path / "processed",
     )
 
-    summary = pipeline.ingest(pdf_path, tmp_path / "processed")
-
-    assert summary.native_pages == 1
-    assert summary.ocr_pages == 0
     assert summary.failed_pages == 1
-
-    page_records = [
+    records = [
         json.loads(line) for line in summary.pages_output.read_text(encoding="utf-8").splitlines()
     ]
-    failed_record = page_records[1]
-
-    assert failed_record["page_number"] == 2
-    assert failed_record["extraction_method"] == "failed"
-    assert "OCR output failed text-quality checks" in failed_record["error"]
-
-    chunk_records = [
-        json.loads(line) for line in summary.chunks_output.read_text(encoding="utf-8").splitlines()
-    ]
-    assert all(chunk["page_number"] != 2 for chunk in chunk_records)
+    failed = records[1]
+    assert failed["native_text"] == ""
+    assert failed["original_text"] == ""
+    assert "OCR output failed text-quality checks" in failed["error"]
 
 
 def test_pipeline_preserves_pypdf_logical_arabic_word_order() -> None:
-    pipeline = IngestionPipeline(expected_language="ar")
-    phrase = (
-        "\u0627\u0644\u0645\u0627\u0644\u064a\u0629 \u0641\u064a "
-        "\u063a\u064a\u0631 \u0645\u062c\u0644\u0633"
-    )
+    pipeline = IngestionPipeline(expected_language="ar", token_counter=WordTokenCounter())
+    phrase = "المالية في غير مجلس"
     native_text = " ".join([phrase] * 8)
 
     record = pipeline._extract_page(
         NoDigitCoordinatePage(),
         native_text=native_text,
-        source_file="financial-law.pdf",
-        document_sha256="b" * 64,
+        metadata=_metadata(),
         page_number=1,
     )
 
     assert record.extraction_method is ExtractionMethod.NATIVE
-    assert record.raw_text == native_text
+    assert record.original_text == native_text
     assert not record.native_rtl_digit_correction_applied
     assert phrase in record.normalized_text
+
+
+def test_duplicate_bytes_under_different_filename_are_reused(tmp_path: Path) -> None:
+    first_path = tmp_path / "first.pdf"
+    second_path = tmp_path / "renamed-copy.pdf"
+    _make_pdf(first_path)
+    shutil.copyfile(first_path, second_path)
+    pipeline = _pipeline(ocr_engine=FakeOcrEngine())
+    output = tmp_path / "processed"
+
+    first = pipeline.ingest(first_path, output)
+    first_ids = [
+        json.loads(line)["chunk_id"]
+        for line in first.chunks_output.read_text(encoding="utf-8").splitlines()
+    ]
+    second = pipeline.ingest(second_path, output)
+    second_ids = [
+        json.loads(line)["chunk_id"]
+        for line in second.chunks_output.read_text(encoding="utf-8").splitlines()
+    ]
+
+    assert second.status is IngestionStatus.DUPLICATE
+    assert first.document_id == second.document_id
+    assert first.pages_output == second.pages_output
+    assert first_ids == second_ids
+
+
+def test_complete_reprocessing_produces_identical_chunk_ids(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "sample.pdf"
+    _make_pdf(pdf_path)
+    pipeline = _pipeline(ocr_engine=FakeOcrEngine())
+    output = tmp_path / "processed"
+
+    first = pipeline.ingest(pdf_path, output)
+    first_bytes = first.chunks_output.read_bytes()
+    first.report_output.unlink()
+    second = pipeline.ingest(pdf_path, output)
+
+    assert second.status is IngestionStatus.PROCESSED
+    assert second.chunks_output.read_bytes() == first_bytes
 
 
 def test_pipeline_rejects_page_count_mismatch(
@@ -152,8 +246,7 @@ def test_pipeline_rejects_page_count_mismatch(
 ) -> None:
     pdf_path = tmp_path / "mismatched.pdf"
     _make_pdf(pdf_path)
-    pipeline = IngestionPipeline(expected_language="en", ocr_engine=FakeOcrEngine())
-    monkeypatch.setattr(pipeline_module, "PdfReader", MismatchedPdfReader)
+    monkeypatch.setattr(extractors_module, "PdfReader", MismatchedPdfReader)
 
     with pytest.raises(ValueError, match="page-count mismatch"):
-        pipeline.ingest(pdf_path, tmp_path / "processed")
+        _pipeline(ocr_engine=FakeOcrEngine()).ingest(pdf_path, tmp_path / "processed")
