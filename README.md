@@ -1,25 +1,26 @@
 ﻿# AI Legal RAG
 
-A local, citation-oriented retrieval-augmented generation system for Arabic and
-English legal and regulatory documents.
+A local, citation-oriented Retrieval-Augmented Generation (RAG) system for
+Arabic and English legal and regulatory documents.
 
-## Current scope
+## Current Scope
 
-The repository currently implements:
+The repository currently implements the following pipeline stages.
 
-### Document ingestion
+### Document Ingestion
 
 - PDF, DOCX, and UTF-8 TXT ingestion behind format-specific extractors.
-- Native PDF extraction using pypdf.
+- Native PDF extraction using `pypdf`.
 - PyMuPDF rendering and right-to-left digit-coordinate analysis.
 - Conditional PaddleOCR fallback for low-quality pages.
 - Arabic and English text-quality measurements.
 - Text normalization and safe RTL legal-number correction.
 - Conservative Arabic/English legal-structure detection.
 - Token-aware chunking using the exact Multilingual E5 Base tokenizer.
-- Stable document/chunk identities and duplicate reuse by SHA-256.
+- Stable document and chunk identities with duplicate reuse by SHA-256.
 - Format-aware page, block, or line citations.
-- Atomic JSONL source/chunk persistence plus a document ingestion report.
+- Atomic JSONL source/chunk persistence.
+- Document ingestion reports.
 
 ### Embeddings
 
@@ -27,19 +28,19 @@ The repository currently implements:
 - Model: `intfloat/multilingual-e5-base`.
 - Document embeddings are generated from processed chunk `normalized_text`.
 - Document text is encoded using the required `passage: ` prefix.
-- Embeddings use a fixed dimensionality of 768.
+- Fixed embedding dimensionality of `768`.
 - Embedding vectors are stored as `float32`.
 - Batch embedding preserves the original chunk order.
 - Embedding generation is performed locally.
 
-### Vector storage
+### Vector Storage
 
 - Qdrant is used as the local vector database.
 - Legal chunk embeddings are stored in the `legal_chunks` collection.
 - Qdrant uses cosine similarity.
 - Each Qdrant point contains:
   - the embedding vector
-  - the chunk identity
+  - the original `chunk_id`
   - document metadata
   - legal section metadata
   - source metadata
@@ -51,7 +52,7 @@ converts each chunk ID into a UUID before storing the point.
 
 The original `chunk_id` is preserved in the Qdrant payload.
 
-### Vector indexing
+### Vector Indexing
 
 Processed `.chunks.jsonl` files can be indexed directly into Qdrant.
 
@@ -67,21 +68,14 @@ Read .chunks.jsonl
 Batch Embedding
       |
       v
-768-dimensional vectors
+768-dimensional Vectors
       |
       v
 Build Qdrant Points
       |
       v
 Upsert into Qdrant
-````
-
-أيوه، الجزء محتاج **تنسيق وتنظيف بسيط** قبل ما يتحط في `README.md`، خصوصًا إن عندك تكرار في `Requirements` و`First-time setup`، وفيه بداية/نهاية Markdown غير متناسقة.
-
-استخدم الجزء التالي **كما هو** بدل الجزء الذي أرسلته:
-
-````markdown
-## Vector Indexing
+```
 
 The indexer supports:
 
@@ -111,7 +105,7 @@ data/processed/*.chunks.jsonl
   Embeddings
       |
       v
- Qdrant Indexing
+Qdrant Indexing
       |
       v
 Qdrant `legal_chunks`
@@ -119,17 +113,17 @@ Qdrant `legal_chunks`
       X
       |
       v
-  Retrieval          <- next stage
+ Retrieval          <- next stage
       |
       v
-  Reranking          <- later
+ Reranking          <- later
       |
       v
-  Prompting          <- later
+ Prompting          <- later
       |
       v
- LLM Generation      <- later
-````
+ LLM Generation     <- later
+```
 
 Retrieval, reranking, prompting, and answer generation are not implemented
 yet.
@@ -138,6 +132,8 @@ yet.
 
 Processed chunk files can be converted into embeddings and indexed into the
 local Qdrant instance.
+
+### Start Qdrant
 
 Make sure Qdrant is running:
 
@@ -152,6 +148,8 @@ The default local Qdrant endpoint is:
 http://127.0.0.1:6333
 ```
 
+### Index Processed Chunks
+
 To index all processed chunk files:
 
 ```powershell
@@ -161,6 +159,8 @@ python -c "from pathlib import Path; from legal_rag.vector_store.indexer import 
 The indexer creates the `legal_chunks` collection when necessary and stores
 one vector point for each processed chunk.
 
+### Verify Indexed Points
+
 To verify the number of indexed points:
 
 ```powershell
@@ -169,15 +169,15 @@ python -c "from legal_rag.vector_store.qdrant import QdrantVectorStore; store=Qd
 
 ### Current Vector Configuration
 
-| Setting            | Value                           |
-| ------------------ | ------------------------------- |
-| Embedding model    | `intfloat/multilingual-e5-base` |
-| Vector dimension   | `768`                           |
-| Data type          | `float32`                       |
-| Similarity         | `COSINE`                        |
-| Vector database    | Qdrant                          |
-| Default collection | `legal_chunks`                  |
-| Default Qdrant URL | `http://127.0.0.1:6333`         |
+| Setting | Value |
+|---|---|
+| Embedding model | `intfloat/multilingual-e5-base` |
+| Vector dimension | `768` |
+| Data type | `float32` |
+| Similarity | `COSINE` |
+| Vector database | Qdrant |
+| Default collection | `legal_chunks` |
+| Default Qdrant URL | `http://127.0.0.1:6333` |
 
 ### Verified Local Indexing Run
 
@@ -196,9 +196,9 @@ This is a development verification result, not a fixed dataset size.
 
 The embedding and vector-storage stages use the following pinned dependencies:
 
-* `sentence-transformers==5.1.1`
-* `tokenizers==0.22.2`
-* `qdrant-client==1.19.0`
+- `sentence-transformers==5.1.1`
+- `tokenizers==0.22.2`
+- `qdrant-client==1.19.0`
 
 The complete dependency configuration is maintained in `pyproject.toml`.
 
@@ -210,28 +210,28 @@ python -m pip install -e ".[ocr,dev]"
 
 ## Requirements
 
-* Git
-* Python 3.11
-* Docker Desktop with Docker Compose
-* Ollama
+- Git
+- Python 3.11
+- Docker Desktop with Docker Compose
+- Ollama
 
 Windows PowerShell commands are shown below.
 
 The project requires Python `>=3.11,<3.12`.
 
-Ollama is required for the planned/local LLM generation stage. The current
-embedding and Qdrant indexing stages do not require Ollama.
+> **Note:** Ollama is required for the planned/local LLM generation stage.
+> The current embedding and Qdrant indexing stages do not require Ollama.
 
 ## First-time Setup
 
-Clone the repository and enter it:
+### 1. Clone the Repository
 
 ```powershell
 git clone <PRIVATE-REPOSITORY-URL>
 cd ai-legal-rag
 ```
 
-Create and activate a virtual environment:
+### 2. Create and Activate a Virtual Environment
 
 ```powershell
 py -3.11 -m venv .venv
@@ -239,13 +239,13 @@ py -3.11 -m venv .venv
 python -m pip install --upgrade pip
 ```
 
-Install development and OCR dependencies:
+### 3. Install Dependencies
 
 ```powershell
 python -m pip install -e ".[ocr,dev]"
 ```
 
-Create the local configuration:
+### 4. Create Local Configuration
 
 ```powershell
 Copy-Item .env.example .env
@@ -255,6 +255,8 @@ Never commit `.env`.
 
 ## Start Local Services
 
+### Qdrant
+
 Start Qdrant:
 
 ```powershell
@@ -262,11 +264,15 @@ docker compose up -d
 docker compose ps
 ```
 
+### Ollama
+
 Install the configured Ollama model:
 
 ```powershell
 ollama pull qwen2.5:3b
 ```
+
+### Health Check
 
 Verify the local services:
 
@@ -287,6 +293,8 @@ docker compose down
 Place approved local `.pdf`, `.docx`, and `.txt` files under `data/input/`.
 This directory is ignored by Git. TXT input must be UTF-8.
 
+### Ingest One Document
+
 Ingest one document with explicit provenance:
 
 ```powershell
@@ -298,11 +306,15 @@ legal-rag-ingest ".\data\input\example.pdf" `
 Use `unknown` only when the document type or issuing source has not yet been
 verified. The pipeline never guesses either value.
 
+### Ingest an Input Directory
+
 Ingest every supported document in the input directory:
 
 ```powershell
 legal-rag-ingest ".\data\input"
 ```
+
+### Process Only the First N PDF Pages
 
 For PDF development runs, process only the first N pages:
 
@@ -310,10 +322,12 @@ For PDF development runs, process only the first N pages:
 legal-rag-ingest ".\data\input\example.pdf" --pages 13
 ```
 
+### Language Detection
+
 Automatic Arabic/English detection is the default. Use `--language ar` or
 `--language en` only as a troubleshooting override.
 
-Select an output directory:
+### Select an Output Directory
 
 ```powershell
 legal-rag-ingest ".\data\input\example.pdf" `
@@ -333,11 +347,13 @@ choice for later scan pages.
 An explicit language override remains useful for unusual or heavily mixed
 scanned documents.
 
+### Chunking Contract
+
 The default chunking contract is:
 
-* 400-token target
-* 60-token overlap
-* 480-token hard maximum
+- 400-token target
+- 60-token overlap
+- 480-token hard maximum
 
 The count includes the `passage: ` prefix required by Multilingual E5 Base.
 The model limit is 512 tokens.
@@ -348,47 +364,58 @@ the local tokenizer cache.
 
 ### Format Behavior
 
-* PDF uses native text with page-level OCR fallback when quality is poor.
-* DOCX reads body paragraphs and table rows in document order.
-* Embedded image OCR, headers, footers, comments, and legacy `.doc` are not
-  included.
-* TXT reads UTF-8 text and preserves line ranges.
-* Binary or legacy-encoded text is rejected instead of guessed.
+- **PDF:** Native text with page-level OCR fallback when quality is poor.
+- **DOCX:** Body paragraphs and table rows are read in document order.
+- **DOCX exclusions:** Embedded image OCR, headers, footers, comments, and
+  legacy `.doc` files are not included.
+- **TXT:** UTF-8 text is read and line ranges are preserved.
+- **Invalid text:** Binary or legacy-encoded text is rejected instead of
+  guessed.
 
 ## Generated Files
 
 Artifacts use a stable prefix derived from the full file SHA-256:
 
-* `data/processed/document-<hash-prefix>.sources.jsonl`
-* `data/processed/document-<hash-prefix>.chunks.jsonl`
-* `data/processed/document-<hash-prefix>.ingestion.json`
+- `data/processed/document-<hash-prefix>.sources.jsonl`
+- `data/processed/document-<hash-prefix>.chunks.jsonl`
+- `data/processed/document-<hash-prefix>.ingestion.json`
 
 A `--pages N` development run adds `-first-N` to the artifact prefix so a
 partial test cannot overwrite the complete document outputs.
 
+### Source Records
+
 Source records distinguish:
 
-* `native_text`: untouched extractor output.
-* `original_text`: exact selected source evidence.
-* `normalized_text`: retrieval-oriented text derived without mutating either
+- `native_text`: untouched extractor output.
+- `original_text`: exact selected source evidence.
+- `normalized_text`: retrieval-oriented text derived without mutating either
   original field.
+
+### Chunk Records
 
 Chunk records include:
 
-* original and normalized text
-* legal section metadata
-* source provenance
-* extraction methods
-* exact token count
-* pinned tokenizer identity
-* pipeline version
-* citation coordinates
+- original and normalized text
+- legal section metadata
+- source provenance
+- extraction methods
+- exact token count
+- pinned tokenizer identity
+- pipeline version
+- citation coordinates
 
 Citation coordinates are pages for PDF, ordered blocks for DOCX, and lines for
 TXT. PDF chunks also retain `page_start` and `page_end` for compatibility.
 
-The ingestion report records document identity, configuration, counts, and
-artifact names.
+### Ingestion Report
+
+The ingestion report records:
+
+- document identity
+- configuration
+- processing counts
+- generated artifact names
 
 Reprocessing identical bytes with identical metadata and configuration returns
 `DUPLICATE` and safely reuses the completed artifacts.
@@ -400,25 +427,25 @@ tour and data flow.
 
 The repository currently contains tests for:
 
-* Configuration
-* Document ingestion
-* Extraction
-* Normalization
-* Chunking
-* Validation
-* Embedding configuration
-* Embedding encoder
-* Batch embedding
-* Processed chunk reading
-* Qdrant collection management
-* Qdrant point construction
-* Qdrant upsert
-* Qdrant indexing
-* Qdrant indexer integration
+- Configuration
+- Document ingestion
+- Extraction
+- Normalization
+- Chunking
+- Validation
+- Embedding configuration
+- Embedding encoder
+- Batch embedding
+- Processed chunk reading
+- Qdrant collection management
+- Qdrant point construction
+- Qdrant upsert
+- Qdrant indexing
+- Qdrant indexer integration
 
-The current test suite contains 73 tests.
+The current test suite contains **73 tests**.
 
-The latest verified quality-gate run achieved:
+### Latest Verified Quality Gate
 
 ```text
 73 passed
@@ -430,7 +457,7 @@ git diff --check: passed
 
 ## Engineering Quality Gate
 
-Run before opening a pull request:
+Run the following checks before opening a pull request:
 
 ```powershell
 python -m ruff check .
@@ -440,18 +467,18 @@ python -m pytest --cov=legal_rag --cov-report=term-missing
 git diff --check
 ```
 
-Configured test coverage must remain at or above 80%.
+Configured test coverage must remain at or above **80%**.
 
 ## Data and Security
 
 The repository intentionally excludes:
 
-* `.env` files and secrets
-* Input documents
-* Extracted and processed data
-* Virtual environments and caches
-* Logs and local models
-* Qdrant storage
+- `.env` files and secrets
+- Input documents
+- Extracted and processed data
+- Virtual environments and caches
+- Logs and local models
+- Qdrant storage
 
 Do not commit confidential documents, generated JSONL files, credentials, or
 local vector data.
@@ -471,5 +498,3 @@ Run the quality gate, commit, push the branch, and open a pull request to
 
 Keep each change focused on one pipeline stage and update the README when a
 new stage becomes operational.
-
-````
