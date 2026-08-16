@@ -174,7 +174,8 @@ def chunk_source_sections(
                 identity = (
                     f"{metadata.document_id}:{metadata.document_version}:"
                     f"{PIPELINE_VERSION}:{page.source_format.value}:"
-                    f"{page.locator_type.value}:{actual_start}:{actual_end}:"
+                    f"{page.locator_type.value}:{page.locator_start}:{page.locator_end}:"
+                    f"{actual_start}:{actual_end}:"
                     f"{span.section_type.value}:{span.section_title or ''}"
                 )
                 locator_start, locator_end = _locator_range(page, actual_start, actual_end)
