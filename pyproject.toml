@@ -23,6 +23,7 @@ dependencies = [
 [project.scripts]
 legal-rag-health = "legal_rag.health:main"
 legal-rag-ingest = "legal_rag.ingestion.cli:main"
+legal-rag-query = "legal_rag.query.cli:main"
 
 
 [project.optional-dependencies]
