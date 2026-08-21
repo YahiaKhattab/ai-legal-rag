@@ -59,6 +59,10 @@ class QdrantIndexer:
         self._store = store or QdrantVectorStore()
         self._embedder = embedder or BatchEmbedder(EmbeddingEncoder())
 
+    def ensure_collection(self) -> None:
+        """Create the Qdrant collection if it does not already exist."""
+        self._store.create_collection()
+
     def index_file(self, chunks_file: Path) -> int:
         """Index all chunks from one processed chunks file."""
 
@@ -74,7 +78,11 @@ class QdrantIndexer:
                 chunk=chunk,
                 embedding=embedding,
             )
-            for chunk, embedding in zip(chunks, embeddings, strict=True)
+            for chunk, embedding in zip(
+                chunks,
+                embeddings,
+                strict=True,
+            )
         ]
 
         self._store.upsert_points(points)
@@ -84,11 +92,13 @@ class QdrantIndexer:
     def index_directory(self, processed_directory: Path) -> int:
         """Index all processed chunk files in a directory."""
 
-        self._store.create_collection()
+        self.ensure_collection()
 
         total_chunks = 0
 
-        for chunks_file in sorted(processed_directory.glob("*.chunks.jsonl")):
+        for chunks_file in sorted(
+            processed_directory.glob("*.chunks.jsonl")
+        ):
             total_chunks += self.index_file(chunks_file)
 
         return total_chunks

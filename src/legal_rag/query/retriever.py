@@ -80,7 +80,7 @@ class LegalRetriever:
                     source_file=payload.get("source_file"),
                     section_type=payload.get("section_type"),
                     section_title=payload.get("section_title"),
-                    page=payload.get("page"),
+                    page=payload.get("page_start"),
                     language=payload.get("language"),
                     document_type=payload.get("document_type"),
                     source=payload.get("source"),
