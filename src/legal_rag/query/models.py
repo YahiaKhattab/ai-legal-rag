@@ -1,11 +1,5 @@
-"""Typed data contracts for the retrieval stage.
+"""Typed data contracts for the retrieval and answer stages."""
 
-These models describe data flowing between Qdrant search, reranking,
-prompting, and generation. Field names intentionally mirror the ChunkRecord /
-Qdrant payload fields already documented for the ingestion and
-vector-indexing stages, so nothing gets renamed on its way through the
-pipeline.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -44,9 +38,22 @@ class Citation:
 
 
 @dataclass(frozen=True)
+class LegalExcerpt:
+    """Original legal text selected from a retrieved source chunk."""
+
+    marker: str
+    text: str
+    source_file: str | None
+    section_title: str | None
+    page: int | None
+    chunk_id: str
+
+
+@dataclass(frozen=True)
 class CitedAnswer:
     query: str
     answer_text: str
     language: str
     citations: list[Citation]
     retrieved_chunk_ids: list[str]
+    legal_excerpts: list[LegalExcerpt] = field(default_factory=list)
