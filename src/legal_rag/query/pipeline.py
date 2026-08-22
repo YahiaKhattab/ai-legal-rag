@@ -10,6 +10,7 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
+from legal_rag.query.answer_language import answer_matches_language
 from legal_rag.query.answer_validator import validate_numeric_claims
 from legal_rag.query.evidence_sufficiency import (
     EvidenceAssessment,
@@ -83,6 +84,7 @@ class RAGAnswerPipeline:
         generation_temperature: float = 0.1,
         generation_retry_count: int = 1,
         maximum_context_characters: int = 12_000,
+        maximum_dense_score_drop: float = 0.02,
     ) -> None:
         self._retriever = retriever
         self._reranker = reranker or get_default_reranker()
@@ -94,6 +96,7 @@ class RAGAnswerPipeline:
         self._generation_temperature = generation_temperature
         self._generation_retry_count = generation_retry_count
         self._maximum_context_characters = maximum_context_characters
+        self._maximum_dense_score_drop = maximum_dense_score_drop
 
     def answer(
         self,
@@ -126,6 +129,7 @@ class RAGAnswerPipeline:
             retrieved=retrieved,
             reranked=reranked,
             top_n=self._evidence_top_n,
+            maximum_dense_score_drop=self._maximum_dense_score_drop,
         )
         prompt = build_grounded_messages(
             query,
@@ -133,7 +137,7 @@ class RAGAnswerPipeline:
             language=language,
             maximum_context_characters=self._maximum_context_characters,
         )
-        generated = self._generate_structured(prompt)
+        generated = self._generate_structured(prompt, language=language)
 
         if generated is None:
             return self._generation_failure_answer(
@@ -213,17 +217,19 @@ class RAGAnswerPipeline:
             prompt_version=prompt.prompt_version,
         )
 
-    def _generate_structured(self, prompt: GroundedPrompt) -> GeneratedAnswer | None:
+    def _generate_structured(
+        self,
+        prompt: GroundedPrompt,
+        *,
+        language: str,
+    ) -> GeneratedAnswer | None:
         schema = GeneratedAnswer.model_json_schema()
         attempts = self._generation_retry_count + 1
 
         for attempt in range(attempts):
             repair_instruction = ""
             if attempt:
-                repair_instruction = (
-                    "\n\nYour previous response was invalid. Return only schema-valid JSON and "
-                    "use only the supplied evidence_ids."
-                )
+                repair_instruction = _repair_instruction(language)
 
             raw_response = self._generator.generate(
                 prompt.user + repair_instruction,
@@ -243,6 +249,8 @@ class RAGAnswerPipeline:
             if not generated.insufficient_evidence and not returned_ids:
                 continue
             if _MODEL_CITATION_PATTERN.search(generated.answer):
+                continue
+            if not answer_matches_language(generated.answer, language):
                 continue
             return generated
 
@@ -343,8 +351,9 @@ def _select_evidence(
     retrieved: list[RetrievedChunk],
     reranked: list[RerankedChunk],
     top_n: int,
+    maximum_dense_score_drop: float,
 ) -> list[RerankedChunk]:
-    """Preserve the strongest dense hit, then fill from reranked results."""
+    """Preserve dense top and admit only similarly strong extra chunks."""
 
     if top_n <= 0 or not retrieved:
         return []
@@ -358,6 +367,8 @@ def _select_evidence(
         if len(selected) >= top_n:
             break
         if chunk.chunk_id in selected_ids:
+            continue
+        if dense_top.score - chunk.score > maximum_dense_score_drop:
             continue
         selected.append(chunk)
         selected_ids.add(chunk.chunk_id)
@@ -405,6 +416,18 @@ def _diagnostics(
 def _attach_citations(answer: str, citations: list[Citation]) -> str:
     markers = " ".join(citation.marker for citation in citations)
     return f"{answer.strip()} {markers}".strip()
+
+
+def _repair_instruction(language: str) -> str:
+    if language == "ar":
+        return (
+            "\n\nكانت الاستجابة السابقة غير صالحة. أعد كائن JSON مطابقاً للمخطط فقط، "
+            "واكتب حقل answer باللغة العربية فقط، واستخدم حصراً evidence_ids المتاحة."
+        )
+    return (
+        "\n\nThe previous response was invalid. Return schema-valid JSON only, "
+        "write the answer in the required language, and use only supplied evidence_ids."
+    )
 
 
 def _no_evidence_message(language: str) -> str:

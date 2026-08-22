@@ -99,6 +99,10 @@ def test_pipeline_preserves_dense_top_and_uses_validated_marker() -> None:
     assert [excerpt.chunk_id for excerpt in result.legal_excerpts] == ["article-3"]
     assert generator.calls[0][1] is not None
     assert generator.calls[0][2] is not None
+    assert "يجب التحقق من الهوية" not in generator.calls[0][0]
+    assert any(
+        "كل واقعة أو مخالفة مستقلة" in part for part in generator.calls[0] if isinstance(part, str)
+    )
 
 
 def test_pipeline_rejects_weak_evidence_without_calling_generator() -> None:
@@ -160,7 +164,7 @@ def test_model_generated_citation_marker_is_rejected() -> None:
 
 def test_selected_evidence_is_rendered_with_sequential_application_markers() -> None:
     first = _chunk("article-3", 0.9, "المادة (3): النص الأول", "المادة (3)")
-    second = _chunk("article-1", 0.85, "المادة (1): النص الثاني", "المادة (1)")
+    second = _chunk("article-1", 0.895, "المادة (1): النص الثاني", "المادة (1)")
     generator = FakeGenerator(
         ['{"answer":"إجابة","evidence_ids":["E2"],"insufficient_evidence":false}']
     )
@@ -175,3 +179,25 @@ def test_selected_evidence_is_rendered_with_sequential_application_markers() -> 
 
     assert result.answer_text == "إجابة [1]"
     assert result.citations[0].marker == "[1]"
+
+
+def test_wrong_answer_language_retries_then_accepts_arabic() -> None:
+    strong = _chunk("article-3", 0.9, "المادة (3): نص قانوني", "المادة (3)")
+    chinese = '{"answer":"公司违反了第三条","evidence_ids":["E1"],"insufficient_evidence":false}'
+    arabic = (
+        '{"answer":"تخالف الشركة أحكام المادة الثالثة","evidence_ids":["E1"],'
+        '"insufficient_evidence":false}'
+    )
+    generator = FakeGenerator([chinese, arabic])
+    pipeline = RAGAnswerPipeline(
+        retriever=FakeRetriever([strong]),
+        reranker=ReversingReranker(),
+        generator=generator,
+        generation_retry_count=1,
+    )
+
+    result = pipeline.answer("ما حكم المادة؟", language="ar")
+
+    assert len(generator.calls) == 2
+    assert result.answer_text == "تخالف الشركة أحكام المادة الثالثة [1]"
+    assert "باللغة العربية فقط" in generator.calls[1][0]

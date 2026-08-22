@@ -19,6 +19,7 @@ def test_settings_load_query_pipeline_environment(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("LEGAL_RAG_RERANK_TOP_N", "5")
     monkeypatch.setenv("LEGAL_RAG_EVIDENCE_TOP_N", "2")
     monkeypatch.setenv("LEGAL_RAG_EXPERIMENTAL_MIN_DENSE_SCORE", "0.81")
+    monkeypatch.setenv("LEGAL_RAG_EXPERIMENTAL_MAX_DENSE_SCORE_DROP", "0.03")
 
     settings = Settings()
 
@@ -27,3 +28,4 @@ def test_settings_load_query_pipeline_environment(monkeypatch: pytest.MonkeyPatc
     assert settings.rerank_top_n == 5
     assert settings.evidence_top_n == 2
     assert settings.experimental_min_dense_score == 0.81
+    assert settings.experimental_max_dense_score_drop == 0.03

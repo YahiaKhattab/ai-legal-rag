@@ -63,6 +63,7 @@ def _build_pipeline(
         generation_temperature=settings.generation_temperature,
         generation_retry_count=settings.generation_retry_count,
         maximum_context_characters=settings.maximum_context_characters,
+        maximum_dense_score_drop=settings.experimental_max_dense_score_drop,
     )
 
 

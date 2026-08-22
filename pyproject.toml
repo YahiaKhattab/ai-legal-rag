@@ -83,6 +83,8 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "src/legal_rag/query/answer_validator.py" = ["RUF001"]
 "src/legal_rag/query/evidence_sufficiency.py" = ["RUF001"]
+"src/legal_rag/query/pipeline.py" = ["RUF001"]
+"tests/test_query_answer_language.py" = ["RUF001"]
 
 
 [tool.mypy]

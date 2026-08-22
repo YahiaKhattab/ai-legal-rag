@@ -37,7 +37,8 @@ class Settings(BaseSettings):
     evidence_sufficiency_enabled: bool = True
     experimental_min_dense_score: float = Field(default=0.82, ge=-1, le=1)
     experimental_identifier_override_score: float = Field(default=0.75, ge=-1, le=1)
-    experimental_min_rerank_score: float | None = None
+    experimental_min_rerank_score: float | None = -1.0
+    experimental_max_dense_score_drop: float = Field(default=0.02, ge=0, le=2)
 
     @field_validator("qdrant_url", "ollama_url")
     @classmethod
