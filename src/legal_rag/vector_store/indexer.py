@@ -96,9 +96,7 @@ class QdrantIndexer:
 
         total_chunks = 0
 
-        for chunks_file in sorted(
-            processed_directory.glob("*.chunks.jsonl")
-        ):
+        for chunks_file in sorted(processed_directory.glob("*.chunks.jsonl")):
             total_chunks += self.index_file(chunks_file)
 
         return total_chunks

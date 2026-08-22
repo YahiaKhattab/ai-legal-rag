@@ -1,4 +1,5 @@
 import numpy as np
+from qdrant_client import QdrantClient
 
 from legal_rag.embeddings.models import EmbeddingConfig
 from legal_rag.ingestion.models import (
@@ -12,7 +13,7 @@ from legal_rag.vector_store.qdrant import QdrantVectorStore
 
 
 def test_qdrant_collection_creation() -> None:
-    store = QdrantVectorStore()
+    store = QdrantVectorStore(client=QdrantClient(":memory:"))
 
     store.create_collection()
 
@@ -23,7 +24,7 @@ def test_qdrant_collection_creation() -> None:
 
 
 def test_build_point_preserves_chunk_metadata() -> None:
-    store = QdrantVectorStore()
+    store = QdrantVectorStore(client=QdrantClient(":memory:"))
 
     chunk = ChunkRecord(
         chunk_id="chunk-123",
@@ -76,6 +77,7 @@ def test_build_point_preserves_chunk_metadata() -> None:
 def test_upsert_points() -> None:
     store = QdrantVectorStore(
         collection_name="test_legal_chunks",
+        client=QdrantClient(":memory:"),
     )
 
     store.create_collection()

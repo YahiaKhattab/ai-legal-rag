@@ -47,6 +47,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"
 testpaths = ["tests"]
+markers = [
+    "integration: requires local services and external model artifacts",
+]
 
 
 [tool.coverage.run]
@@ -76,6 +79,10 @@ select = [
     "SIM",
     "RUF",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"src/legal_rag/query/answer_validator.py" = ["RUF001"]
+"src/legal_rag/query/evidence_sufficiency.py" = ["RUF001"]
 
 
 [tool.mypy]

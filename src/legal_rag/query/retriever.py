@@ -4,9 +4,12 @@ Implements FR-003 ("search legal documents using natural language in both
 Arabic and English") on top of the already-implemented Qdrant vector store
 and embeddings.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from qdrant_client import models as qmodels
 
 from legal_rag.query.chunk_text_store import ChunkTextStore
 from legal_rag.query.models import RetrievedChunk
@@ -67,7 +70,12 @@ class LegalRetriever:
             payload = point.payload or {}
             chunk_id = str(payload.get("chunk_id", point.id))
 
-            text = payload.get("original_text") or payload.get("normalized_text") or payload.get("text") or ""
+            text = (
+                payload.get("original_text")
+                or payload.get("normalized_text")
+                or payload.get("text")
+                or ""
+            )
             if not text and self._text_store is not None:
                 text = self._text_store.get_text(chunk_id) or ""
 
@@ -90,23 +98,27 @@ class LegalRetriever:
         return chunks
 
 
-def _build_filter(filters: RetrievalFilters):
-    from qdrant_client import models as qmodels
-
-    conditions = []
+def _build_filter(filters: RetrievalFilters) -> qmodels.Filter | None:
+    conditions: list[qmodels.Condition] = []
     if filters.language:
         conditions.append(
             qmodels.FieldCondition(key="language", match=qmodels.MatchValue(value=filters.language))
         )
     if filters.document_type:
         conditions.append(
-            qmodels.FieldCondition(key="document_type", match=qmodels.MatchValue(value=filters.document_type))
+            qmodels.FieldCondition(
+                key="document_type", match=qmodels.MatchValue(value=filters.document_type)
+            )
         )
     if filters.source:
-        conditions.append(qmodels.FieldCondition(key="source", match=qmodels.MatchValue(value=filters.source)))
+        conditions.append(
+            qmodels.FieldCondition(key="source", match=qmodels.MatchValue(value=filters.source))
+        )
     if filters.document_id:
         conditions.append(
-            qmodels.FieldCondition(key="document_id", match=qmodels.MatchValue(value=filters.document_id))
+            qmodels.FieldCondition(
+                key="document_id", match=qmodels.MatchValue(value=filters.document_id)
+            )
         )
     if not conditions:
         return None

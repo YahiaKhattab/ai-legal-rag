@@ -50,6 +50,22 @@ class LegalExcerpt:
 
 
 @dataclass(frozen=True)
+class RetrievalDiagnostics:
+    """Observable retrieval signals used by the sufficiency gate."""
+
+    strategy: str
+    candidate_count: int
+    used_chunk_count: int
+    sufficient: bool
+    reason: str
+    top_dense_score: float | None
+    dense_score_margin: float | None
+    top_rerank_score: float | None
+    exact_identifier_match: bool
+    source_count: int
+
+
+@dataclass(frozen=True)
 class CitedAnswer:
     query: str
     answer_text: str
@@ -57,3 +73,5 @@ class CitedAnswer:
     citations: list[Citation]
     retrieved_chunk_ids: list[str]
     legal_excerpts: list[LegalExcerpt] = field(default_factory=list)
+    retrieval: RetrievalDiagnostics | None = None
+    prompt_version: str | None = None

@@ -82,14 +82,26 @@ def test_main_reports_processed_document(
                 report_output=output / "report.json",
             )
 
+    class FakeIndexer:
+        def ensure_collection(self) -> None:
+            pass
+
+        def index_file(self, chunks_file: Path) -> int:
+            assert chunks_file.name == "chunks.jsonl"
+            return 3
+
     monkeypatch.setattr(cli_module, "IngestionPipeline", FakePipeline)
+    monkeypatch.setattr(cli_module, "_build_indexer", lambda settings: FakeIndexer())
     monkeypatch.setattr(
         "sys.argv",
         ["legal-rag-ingest", str(pdf_path), "--source", "Test Authority"],
     )
 
     assert cli_module.main() == 0
-    assert "PROCESSED law.pdf" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Status:          processed" in output
+    assert "Source:          law.pdf" in output
+    assert "DOCUMENT STATUS: READY" in output
 
 
 def test_main_rejects_empty_directory(

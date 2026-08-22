@@ -7,10 +7,12 @@ weights keeps query and document vectors in the same space; only the
 prefix differs. This is what makes natural-language Arabic/English/mixed
 search (FR-003) work against the already-indexed passage vectors.
 """
+
 from __future__ import annotations
 
 from functools import lru_cache
 
+import numpy as np
 from sentence_transformers import SentenceTransformer
 
 _DEFAULT_MODEL_NAME = "intfloat/multilingual-e5-base"
@@ -35,7 +37,8 @@ class QueryEmbedder:
             normalize_embeddings=True,
             convert_to_numpy=True,
         )
-        return vector.astype("float32").tolist()
+        normalized = np.asarray(vector, dtype=np.float32)
+        return [float(value) for value in normalized]
 
 
 @lru_cache(maxsize=1)

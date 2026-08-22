@@ -1,9 +1,20 @@
+import os
 from pathlib import Path
+
+import pytest
 
 from legal_rag.embeddings.batch import BatchEmbedder
 from legal_rag.embeddings.encoder import EmbeddingEncoder
 from legal_rag.vector_store.indexer import QdrantIndexer
 from legal_rag.vector_store.qdrant import QdrantVectorStore
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.getenv("LEGAL_RAG_RUN_INTEGRATION") != "1",
+        reason="set LEGAL_RAG_RUN_INTEGRATION=1 to run local-service integration tests",
+    ),
+]
 
 
 def test_index_processed_file_into_qdrant() -> None:

@@ -85,48 +85,58 @@ The indexer supports:
 - Preserving chunk order during embedding.
 - Preserving chunk metadata inside the Qdrant payload.
 
-## Current RAG Boundary
+## Grounded Query Pipeline
 
-The implemented pipeline currently ends at vector storage.
+The application implements a local, fail-closed query path:
 
 ```text
-Input Document
-      |
-      v
-   Ingestion
-      |
-      v
-   Chunking
-      |
-      v
-data/processed/*.chunks.jsonl
-      |
-      v
-  Embeddings
-      |
-      v
-Qdrant Indexing
-      |
-      v
-Qdrant `legal_chunks`
-      |
-      X
-      |
-      v
- Retrieval          <- next stage
-      |
-      v
- Reranking          <- later
-      |
-      v
- Prompting          <- later
-      |
-      v
- LLM Generation     <- later
+Question
+   |
+   v
+Dense E5 retrieval
+   |
+   v
+Cross-encoder reranking
+   |
+   v
+Experimental evidence-sufficiency gate
+   |
+   +---- insufficient ---> canonical no-evidence response
+   |
+   v
+Dense-top-preserving evidence selection
+   |
+   v
+Versioned system prompt + untrusted evidence data
+   |
+   v
+Ollama structured JSON generation
+   |
+   v
+Application validation of evidence IDs and numeric claims
+   |
+   v
+Application-rendered citations
 ```
 
-Retrieval, reranking, prompting, and answer generation are not implemented
-yet.
+The model may select only application-issued evidence IDs such as `E1` and
+`E2`. Unknown IDs, model-generated citation markers, and malformed structured
+responses are rejected and retried once. A second failure returns without
+citations. Retrieved document text is passed as bounded, explicitly untrusted
+data and cannot replace system instructions.
+
+The default dense sufficiency score is an experimental smoke-test value. It
+must be calibrated with a larger evaluation set before production use.
+
+Query the indexed corpus with:
+
+```powershell
+legal-rag-query "ما هي الضوابط القانونية؟" --language ar --top-k 20 --top-n 6
+```
+
+Query, reranking, generation, context, collection, model, and experimental
+sufficiency settings are loaded from `.env`. CLI `--top-k` and `--top-n`
+arguments override their corresponding environment settings.
 
 ## Embedding and Vector Indexing
 
@@ -442,14 +452,22 @@ The repository currently contains tests for:
 - Qdrant upsert
 - Qdrant indexing
 - Qdrant indexer integration
+- Dense retrieval and metadata filtering
+- Cross-encoder reranking
+- Evidence sufficiency decisions
+- Structured citation validation and retry behavior
+- Prompt-injection boundaries and context limits
+- Ollama request contracts
+- Query CLI diagnostics
 
-The current test suite contains **73 tests**.
+The default test suite contains **92 passing tests** and skips the explicit
+local-service integration test unless `LEGAL_RAG_RUN_INTEGRATION=1` is set.
 
 ### Latest Verified Quality Gate
 
 ```text
-73 passed
-88.24% total coverage
+92 passed, 1 skipped
+85.42% total coverage
 mypy: no issues
 ruff: all checks passed
 git diff --check: passed

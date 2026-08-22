@@ -9,6 +9,7 @@ relevance. This is the standard reason to add a reranking stage after
 initial retrieval, and matches "Improve candidate ordering after initial
 vector retrieval" in the current status table.
 """
+
 from __future__ import annotations
 
 from functools import lru_cache
@@ -42,7 +43,7 @@ class CrossEncoderReranker:
 
         reranked = [
             RerankedChunk(**candidate.__dict__, rerank_score=float(score))
-            for candidate, score in zip(candidates, scores)
+            for candidate, score in zip(candidates, scores, strict=True)
         ]
         reranked.sort(key=lambda chunk: chunk.rerank_score, reverse=True)
         return reranked[:top_n]
