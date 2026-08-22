@@ -25,11 +25,10 @@ from __future__ import annotations
 
 import re
 
-
 _NUMBER_PATTERN = re.compile(
     r"""
     (?:
-        \d+(?:[.,]\d+)*
+        [0-9]+(?:[.,][0-9]+)*
         |
         [٠-٩]+(?:[٫،.][٠-٩]+)*
     )
@@ -67,7 +66,7 @@ _ARABIC_NUMBER_WORDS = {
 _MILLION_PATTERN = re.compile(
     r"""
     (
-        \d+(?:[.,]\d+)*
+        [0-9]+(?:[.,][0-9]+)*
         |
         [٠-٩]+(?:[٫،.][٠-٩]+)*
     )
@@ -155,9 +154,7 @@ def extract_arabic_number_words(text: str) -> set[int]:
         normalized = word.strip()
 
         if normalized in _ARABIC_NUMBER_WORDS:
-            numbers.add(
-                _ARABIC_NUMBER_WORDS[normalized]
-            )
+            numbers.add(_ARABIC_NUMBER_WORDS[normalized])
 
     return numbers
 
@@ -185,21 +182,17 @@ def _extract_million_values(text: str) -> set[str]:
         number = _normalize_number(match.group(1))
 
         if number:
-            values.add(
-                f"{number} million"
-            )
+            values.add(f"{number} million")
 
     # Arabic word forms:
     # خمسة ملايين
     for match in _ARABIC_MILLION_WORD_PATTERN.finditer(text):
         word = match.group(1).strip()
 
-        number = _ARABIC_NUMBER_WORDS.get(word)
+        number_word_value = _ARABIC_NUMBER_WORDS.get(word)
 
-        if number is not None:
-            values.add(
-                f"{number} million"
-            )
+        if number_word_value is not None:
+            values.add(f"{number_word_value} million")
 
     return values
 
@@ -233,14 +226,14 @@ def _contains_legal_threshold(
     )
 
     threshold_patterns = [
-        rf"(?:أقل|اقل|أقل من|اقل من)\s*(?:قيمة\s*)?(?:الدعوى|الدعاوى|المنازعة|المنازعات)?\s*{number}\s*(?:مليون|ملايين|million|millions)",
-
+        rf"(?:أقل|اقل|أقل من|اقل من)\s*(?:قيمة\s*)?"
+        rf"(?:الدعوى|الدعاوى|المنازعة|المنازعات)?\s*{number}"
+        rf"\s*(?:مليون|ملايين|million|millions)",
         rf"(?:تقل|يقل)\s*(?:قيمتها|قيمته|القيمة)?\s*(?:عن|على)?\s*{number}\s*(?:مليون|ملايين|million|millions)",
-
-        rf"(?:لا تجاوز|لا يجاوز|لا تتجاوز|لا يتجاوز)\s*(?:قيمتها|قيمته|القيمة)?\s*{number}\s*(?:مليون|ملايين|million|millions)",
-
+        rf"(?:لا تجاوز|لا يجاوز|لا تتجاوز|لا يتجاوز)"
+        rf"\s*(?:قيمتها|قيمته|القيمة)?\s*{number}"
+        rf"\s*(?:مليون|ملايين|million|millions)",
         rf"(?:تزيد|يزيد)\s*(?:قيمتها|قيمته|القيمة)?\s*(?:على|عن)\s*{number}\s*(?:مليون|ملايين|million|millions)",
-
         rf"(?:تجاوز|تجاوزت|يتجاوز|تتجاوز)\s*(?:قيمتها|قيمته|القيمة)?\s*{number}\s*(?:مليون|ملايين|million|millions)",
     ]
 
@@ -297,35 +290,17 @@ def validate_numeric_claims(
     answer_numbers = extract_numbers(answer)
     evidence_numbers = extract_numbers(evidence_text)
 
-    unsupported_numbers = (
-        answer_numbers
-        - query_numbers
-        - evidence_numbers
-    )
+    unsupported_numbers = answer_numbers - query_numbers - evidence_numbers
 
-    query_millions = _extract_million_values(
-        query
-    )
+    query_millions = _extract_million_values(query)
 
-    answer_millions = _extract_million_values(
-        answer
-    )
+    answer_millions = _extract_million_values(answer)
 
-    evidence_millions = _extract_million_values(
-        evidence_text
-    )
+    evidence_millions = _extract_million_values(evidence_text)
 
-    query_thresholds = _extract_threshold_values(
-        query
-    )
+    answer_thresholds = _extract_threshold_values(answer)
 
-    answer_thresholds = _extract_threshold_values(
-        answer
-    )
-
-    evidence_thresholds = _extract_threshold_values(
-        evidence_text
-    )
+    evidence_thresholds = _extract_threshold_values(evidence_text)
 
     # ---------------------------------------------------------
     # Rule 1:
@@ -333,9 +308,7 @@ def validate_numeric_claims(
     # ---------------------------------------------------------
     for value in answer_thresholds:
         if value not in evidence_thresholds:
-            unsupported_numbers.add(
-                value
-            )
+            unsupported_numbers.add(value)
 
     # ---------------------------------------------------------
     # Rule 2:
@@ -353,14 +326,12 @@ def validate_numeric_claims(
     # Even though "3 million" exists in the user question,
     # it is invalid when used as a legal threshold.
     # ---------------------------------------------------------
-    if evidence_thresholds and answer_thresholds:
-        if not answer_thresholds.issubset(
-            evidence_thresholds
-        ):
-            unsupported_numbers.update(
-                answer_thresholds
-                - evidence_thresholds
-            )
+    if (
+        evidence_thresholds
+        and answer_thresholds
+        and not answer_thresholds.issubset(evidence_thresholds)
+    ):
+        unsupported_numbers.update(answer_thresholds - evidence_thresholds)
 
     # ---------------------------------------------------------
     # Rule 3:
@@ -380,9 +351,7 @@ def validate_numeric_claims(
 
         # If it is neither a user value nor an evidence value,
         # it is unsupported.
-        unsupported_numbers.add(
-            value
-        )
+        unsupported_numbers.add(value)
 
     # ---------------------------------------------------------
     # Rule 4:
@@ -400,15 +369,9 @@ def validate_numeric_claims(
     if evidence_thresholds:
         for answer_value in answer_thresholds:
             if answer_value not in evidence_thresholds:
-                unsupported_numbers.add(
-                    answer_value
-                )
+                unsupported_numbers.add(answer_value)
 
-    evidence_numeric_values = (
-        evidence_numbers
-        | evidence_millions
-        | evidence_thresholds
-    )
+    evidence_numeric_values = evidence_numbers | evidence_millions | evidence_thresholds
 
     return (
         not unsupported_numbers,

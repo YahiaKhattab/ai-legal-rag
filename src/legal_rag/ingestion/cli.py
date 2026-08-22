@@ -5,11 +5,15 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from legal_rag.config import Settings
+from legal_rag.embeddings.batch import BatchEmbedder
+from legal_rag.embeddings.encoder import EmbeddingEncoder
+from legal_rag.embeddings.models import EmbeddingConfig
 from legal_rag.ingestion.models import ChunkingConfig
 from legal_rag.ingestion.pipeline import IngestionPipeline
 from legal_rag.ingestion.validation import DEFAULT_MAXIMUM_DOCUMENT_BYTES
 from legal_rag.vector_store.indexer import QdrantIndexer
-
+from legal_rag.vector_store.qdrant import QdrantVectorStore
 
 SUPPORTED_SUFFIXES = frozenset({".pdf", ".docx", ".txt"})
 
@@ -48,10 +52,7 @@ def _parser() -> argparse.ArgumentParser:
         "--language",
         choices=("ar", "en", "auto"),
         default="auto",
-        help=(
-            "Expected language. Use auto for automatic "
-            "Arabic/English detection."
-        ),
+        help=("Expected language. Use auto for automatic Arabic/English detection."),
     )
 
     parser.add_argument(
@@ -94,10 +95,7 @@ def _parser() -> argparse.ArgumentParser:
         dest="maximum_document_mb",
         type=int,
         default=DEFAULT_MAXIMUM_DOCUMENT_BYTES // (1024 * 1024),
-        help=(
-            "Maximum size per input document "
-            "(legacy --maximum-pdf-mb is also accepted)."
-        ),
+        help=("Maximum size per input document (legacy --maximum-pdf-mb is also accepted)."),
     )
 
     return parser
@@ -114,8 +112,7 @@ def _expand_inputs(inputs: list[Path]) -> list[Path]:
                 sorted(
                     path
                     for path in input_path.iterdir()
-                    if path.is_file()
-                    and path.suffix.lower() in SUPPORTED_SUFFIXES
+                    if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES
                 )
             )
         else:
@@ -124,24 +121,35 @@ def _expand_inputs(inputs: list[Path]) -> list[Path]:
     return paths
 
 
+def _build_indexer(settings: Settings) -> QdrantIndexer:
+    """Build the configured production indexer behind a testable boundary."""
+
+    store = QdrantVectorStore(
+        url=settings.qdrant_url,
+        collection_name=settings.qdrant_collection,
+    )
+    embedder = BatchEmbedder(
+        EmbeddingEncoder(
+            EmbeddingConfig(
+                model_name=settings.embedding_model,
+                device=settings.embedding_device,
+            )
+        )
+    )
+    return QdrantIndexer(store=store, embedder=embedder)
+
+
 def main() -> int:
     arguments = _parser().parse_args()
+    settings = Settings()
 
     documents = _expand_inputs(arguments.documents)
 
     if not documents:
-        raise SystemExit(
-            "No supported PDF, DOCX, or TXT files found."
-        )
+        raise SystemExit("No supported PDF, DOCX, or TXT files found.")
 
-    if arguments.pages is not None:
-        if any(
-            path.suffix.lower() != ".pdf"
-            for path in documents
-        ):
-            raise SystemExit(
-                "--pages can only be used when every input is PDF."
-            )
+    if arguments.pages is not None and any(path.suffix.lower() != ".pdf" for path in documents):
+        raise SystemExit("--pages can only be used when every input is PDF.")
 
     # ---------------------------------------------------------
     # 1. Create the ingestion pipeline.
@@ -153,15 +161,13 @@ def main() -> int:
             overlap_tokens=arguments.overlap_tokens,
             maximum_tokens=arguments.maximum_tokens,
         ),
-        maximum_document_bytes=(
-            arguments.maximum_document_mb * 1024 * 1024
-        ),
+        maximum_document_bytes=(arguments.maximum_document_mb * 1024 * 1024),
     )
 
     # ---------------------------------------------------------
     # 2. Create the Qdrant indexer.
     # ---------------------------------------------------------
-    indexer = QdrantIndexer()
+    indexer = _build_indexer(settings)
 
     # Make sure the Qdrant collection exists before indexing.
     indexer.ensure_collection()
@@ -220,21 +226,14 @@ def main() -> int:
                 print("INDEXING INTO QDRANT...")
                 print("-" * 70)
 
-                indexed_chunks = indexer.index_file(
-                    summary.chunks_output
-                )
+                indexed_chunks = indexer.index_file(summary.chunks_output)
 
                 total_indexed_chunks += indexed_chunks
 
-                print(
-                    f"Indexed chunks: {indexed_chunks}"
-                )
+                print(f"Indexed chunks: {indexed_chunks}")
             else:
                 print()
-                print(
-                    "No chunks generated; "
-                    "nothing was indexed into Qdrant."
-                )
+                print("No chunks generated; nothing was indexed into Qdrant.")
 
             print()
             print("DOCUMENT STATUS: READY")

@@ -21,8 +21,9 @@ class QdrantVectorStore:
         url: str = "http://127.0.0.1:6333",
         collection_name: str = "legal_chunks",
         vector_size: int = 768,
+        client: QdrantClient | None = None,
     ) -> None:
-        self._client = QdrantClient(url=url)
+        self._client = client or QdrantClient(url=url)
         self._collection_name = collection_name
         self._vector_size = vector_size
 

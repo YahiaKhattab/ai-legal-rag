@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import httpx
 
 
@@ -14,20 +16,34 @@ class OllamaGenerationClient:
         self._model = model
         self._timeout = timeout_seconds
 
-    def generate(self, prompt: str, temperature: float = 0.1) -> str:
-        """Non-streaming generation."""
+    def generate(
+        self,
+        prompt: str,
+        temperature: float = 0.1,
+        *,
+        system: str | None = None,
+        format_schema: Mapping[str, object] | None = None,
+    ) -> str:
+        """Generate a non-streaming response with optional structured output."""
+
+        payload: dict[str, object] = {
+            "model": self._model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": temperature},
+        }
+        if system is not None:
+            payload["system"] = system
+        if format_schema is not None:
+            payload["format"] = dict(format_schema)
 
         response = httpx.post(
             f"{self._base_url}/api/generate",
-            json={
-                "model": self._model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": temperature,
-                },
-            },
+            json=payload,
             timeout=self._timeout,
         )
         response.raise_for_status()
-        return response.json()["response"].strip()
+        generated = response.json().get("response")
+        if not isinstance(generated, str):
+            raise ValueError("Ollama response did not contain generated text")
+        return generated.strip()

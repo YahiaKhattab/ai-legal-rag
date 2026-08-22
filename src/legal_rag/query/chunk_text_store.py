@@ -18,6 +18,7 @@ LegalRetriever tries the payload first and falls back to this store when a
 text field is missing, so either integration path works without code
 changes elsewhere.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -39,7 +40,11 @@ class ChunkTextStore:
             index: dict[str, str] = {}
             for chunk_file in sorted(self._processed_dir.glob("*.chunks.jsonl")):
                 for chunk in read_chunks(chunk_file):
-                    text = getattr(chunk, "original_text", None) or getattr(chunk, "normalized_text", "") or ""
+                    text = (
+                        getattr(chunk, "original_text", None)
+                        or getattr(chunk, "normalized_text", "")
+                        or ""
+                    )
                     index[chunk.chunk_id] = text
             self._index = index
         return self._index
