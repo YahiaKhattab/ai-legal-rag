@@ -1,0 +1,48 @@
+# Version control
+.git/
+.gitignore
+.gitattributes
+
+# Docs and tests are not needed inside the image
+README.md
+docs/
+documentation/
+tests/
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Secrets and local configuration - env vars are injected at runtime,
+# never baked into the image
+.env
+.env.*
+!.env.example
+
+# Local/runtime data - not part of the image
+data/
+models/
+logs/
+*.log
+qdrant_storage/
+
+# Editor/OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# This delivery folder's own docker-compose (compose file is used by
+# docker compose directly from the host, it doesn't need to be in the
+# build context sent to the daemon)
+docker-compose.yml

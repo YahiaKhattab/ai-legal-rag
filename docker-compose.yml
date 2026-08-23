@@ -1,4 +1,31 @@
 services:
+  ai-legal-rag-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai-legal-rag-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Service URLs point at the other containers on the compose network,
+      # NOT localhost - localhost inside this container is this container.
+      LEGAL_RAG_QDRANT_URL: http://qdrant:6333
+      LEGAL_RAG_OLLAMA_URL: http://ollama:11434
+      LEGAL_RAG_QDRANT_COLLECTION: legal_chunks
+      LEGAL_RAG_GENERATION_MODEL: qwen2.5:3b
+      LEGAL_RAG_EMBEDDING_DEVICE: cpu
+      LEGAL_RAG_RERANK_DEVICE: cpu
+    depends_on:
+      - qdrant
+      - ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
   qdrant:
     image: qdrant/qdrant:v1.19.0
     container_name: ai-legal-qdrant
@@ -9,5 +36,43 @@ services:
     volumes:
       - qdrant_storage:/qdrant/storage
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ai-legal-ollama
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # GPU note: this brings Ollama up on CPU. If the deployment machine has
+    # an NVIDIA GPU and the NVIDIA container toolkit installed, uncomment
+    # the block below to use it (much faster generation).
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # One-shot helper: pulls the qwen2.5:3b model into the ollama_data volume
+  # on first startup. Runs once and exits; ollama itself keeps running.
+  ollama-pull:
+    image: ollama/ollama:latest
+    container_name: ai-legal-ollama-pull
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    volumes:
+      - ollama_data:/root/.ollama
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "until ollama list >/dev/null 2>&1;
+       do echo waiting for ollama...; sleep 2; done;
+       ollama pull qwen2.5:3b"
+    restart: "no"
+
 volumes:
   qdrant_storage:
+  ollama_data:
