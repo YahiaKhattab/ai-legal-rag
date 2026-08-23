@@ -17,6 +17,11 @@ dependencies = [
     "qdrant-client==1.19.0",
     "sentence-transformers==5.1.1",
     "tokenizers==0.22.2",
+
+    # API
+    "fastapi==0.141.1",
+    "uvicorn[standard]==0.52.1",
+    "python-multipart==0.0.32",
 ]
 
 
