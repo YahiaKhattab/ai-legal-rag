@@ -1,5 +1,3 @@
-"""HTTP endpoints for legal question answering and opinion ingestion."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -20,13 +18,23 @@ from legal_rag.query.retriever import RetrievalFilters
 from legal_rag.vector_store.indexer import QdrantIndexer
 from legal_rag.vector_store.qdrant import QdrantVectorStore
 
-from legal_rag_api.schemas import AskRequest, AskResponse
+from legal_rag_api.schemas import (
+    AskRequest,
+    AskResponse,
+    CitationResponse,
+    LegalEvidence,
+)
 
 
 router = APIRouter(
     prefix="/legalAi",
     tags=["Legal AI"],
 )
+
+
+# ======================================================================
+# ASK
+# ======================================================================
 
 
 @router.post(
@@ -52,17 +60,57 @@ async def ask(request: AskRequest) -> AskResponse:
             filters=RetrievalFilters(),
         )
 
-        source = ""
+        # ==============================================================
+        # SELECTED LEGAL EVIDENCE
+        # ==============================================================
 
-        if result.legal_excerpts:
-            source = (
-                result.legal_excerpts[0].source_file
-                or result.legal_excerpts[0].chunk_id
+        selected_legal_evidence: list[LegalEvidence] = []
+
+        for index, excerpt in enumerate(
+            result.legal_excerpts,
+            start=1,
+        ):
+            selected_legal_evidence.append(
+                LegalEvidence(
+                    citation=f"[{index}]",
+                    source=(
+                        excerpt.source_file
+                        or excerpt.chunk_id
+                    ),
+                    page=excerpt.page,
+                    section=excerpt.section_title,
+                    evidence=excerpt.text.strip(),
+                )
             )
 
+        # ==============================================================
+        # CITATIONS
+        # ==============================================================
+
+        citations: list[CitationResponse] = []
+
+        for citation in result.citations:
+            citations.append(
+                CitationResponse(
+                    marker=citation.marker,
+                    source=(
+                        citation.source_file
+                        or citation.document_id
+                    ),
+                    section=citation.section_title,
+                    page=citation.page,
+                )
+            )
+
+        # ==============================================================
+        # USER-FACING RESPONSE
+        # ==============================================================
+
         return AskResponse(
-            answer=result.answer_text,
-            source=source,
+            question=request.query,
+            answer=result.answer_text.strip(),
+            selected_legal_evidence=selected_legal_evidence,
+            citations=citations,
         )
 
     except Exception as exc:
@@ -70,6 +118,11 @@ async def ask(request: AskRequest) -> AskResponse:
             status_code=500,
             detail="Failed to process the legal query.",
         ) from exc
+
+
+# ======================================================================
+# QDRANT INDEXER
+# ======================================================================
 
 
 def _build_indexer(settings: Settings) -> QdrantIndexer:
@@ -95,6 +148,11 @@ def _build_indexer(settings: Settings) -> QdrantIndexer:
     )
 
 
+# ======================================================================
+# ADD NEW OPINION
+# ======================================================================
+
+
 @router.post(
     "/AddNewOpinion",
     summary="Add a new legal opinion",
@@ -111,10 +169,24 @@ async def add_new_opinion(
         settings = Settings()
 
         with TemporaryDirectory() as temporary_directory:
-            temporary_path = Path(temporary_directory) / file.filename
+
+            temporary_path = (
+                Path(temporary_directory)
+                / file.filename
+            )
 
             file_content = await file.read()
-            temporary_path.write_bytes(file_content)
+
+            if not file_content:
+                return "Failed To Add"
+
+            temporary_path.write_bytes(
+                file_content
+            )
+
+            # ==========================================================
+            # INGESTION
+            # ==========================================================
 
             ingestion_pipeline = IngestionPipeline(
                 expected_language="auto",
@@ -123,11 +195,14 @@ async def add_new_opinion(
                     overlap_tokens=60,
                     maximum_tokens=480,
                 ),
-                maximum_document_bytes=DEFAULT_MAXIMUM_DOCUMENT_BYTES,
+                maximum_document_bytes=(
+                    DEFAULT_MAXIMUM_DOCUMENT_BYTES
+                ),
             )
 
             summary = ingestion_pipeline.ingest(
                 temporary_path,
+                Path(temporary_directory),
                 document_version=1,
                 document_type="unknown",
                 source="unknown",
@@ -136,9 +211,17 @@ async def add_new_opinion(
             if summary.chunks == 0:
                 return "Failed To Add"
 
+            # ==========================================================
+            # INDEX INTO QDRANT
+            # ==========================================================
+
             indexer = _build_indexer(settings)
+
             indexer.ensure_collection()
-            indexer.index_file(summary.chunks_output)
+
+            indexer.index_file(
+                summary.chunks_output
+            )
 
         return "Added To Database Successfully"
 

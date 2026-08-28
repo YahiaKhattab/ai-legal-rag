@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 
+
 _NUMBER_PATTERN = re.compile(
     r"""
     (?:
@@ -208,6 +209,23 @@ def _million_number(value: str) -> float:
     return float(number)
 
 
+def _million_base_numbers(values: set[str]) -> set[str]:
+    """Return the numeric base of validated million values.
+
+    Example:
+        {"5 million", "3 million"} -> {"5", "3"}
+
+    This is used only to prevent a validated million value from being
+    incorrectly rejected because its numeric component was separately
+    extracted by ``extract_numbers``.
+    """
+
+    return {
+        value.removesuffix(" million").strip()
+        for value in values
+    }
+
+
 def _contains_legal_threshold(
     text: str,
     million_value: str,
@@ -229,12 +247,19 @@ def _contains_legal_threshold(
         rf"(?:أقل|اقل|أقل من|اقل من)\s*(?:قيمة\s*)?"
         rf"(?:الدعوى|الدعاوى|المنازعة|المنازعات)?\s*{number}"
         rf"\s*(?:مليون|ملايين|million|millions)",
-        rf"(?:تقل|يقل)\s*(?:قيمتها|قيمته|القيمة)?\s*(?:عن|على)?\s*{number}\s*(?:مليون|ملايين|million|millions)",
+
+        rf"(?:تقل|يقل)\s*(?:قيمتها|قيمته|القيمة)?\s*(?:عن|على)?\s*{number}\s*"
+        rf"(?:مليون|ملايين|million|millions)",
+
         rf"(?:لا تجاوز|لا يجاوز|لا تتجاوز|لا يتجاوز)"
         rf"\s*(?:قيمتها|قيمته|القيمة)?\s*{number}"
         rf"\s*(?:مليون|ملايين|million|millions)",
-        rf"(?:تزيد|يزيد)\s*(?:قيمتها|قيمته|القيمة)?\s*(?:على|عن)\s*{number}\s*(?:مليون|ملايين|million|millions)",
-        rf"(?:تجاوز|تجاوزت|يتجاوز|تتجاوز)\s*(?:قيمتها|قيمته|القيمة)?\s*{number}\s*(?:مليون|ملايين|million|millions)",
+
+        rf"(?:تزيد|يزيد)\s*(?:قيمتها|قيمته|القيمة)?\s*(?:على|عن)\s*{number}\s*"
+        rf"(?:مليون|ملايين|million|millions)",
+
+        rf"(?:تجاوز|تجاوزت|يتجاوز|تتجاوز)\s*(?:قيمتها|قيمته|القيمة)?\s*{number}\s*"
+        rf"(?:مليون|ملايين|million|millions)",
     ]
 
     normalized = text.lower()
@@ -277,6 +302,7 @@ def validate_numeric_claims(
     3. A legal threshold appearing in the answer must agree with the
        corresponding threshold found in the evidence.
     4. A user case amount must NOT replace a different legal threshold.
+    5. A numeric component of a validated million value is also allowed.
 
     Returns:
         (
@@ -290,16 +316,47 @@ def validate_numeric_claims(
     answer_numbers = extract_numbers(answer)
     evidence_numbers = extract_numbers(evidence_text)
 
-    unsupported_numbers = answer_numbers - query_numbers - evidence_numbers
-
     query_millions = _extract_million_values(query)
-
     answer_millions = _extract_million_values(answer)
-
     evidence_millions = _extract_million_values(evidence_text)
 
-    answer_thresholds = _extract_threshold_values(answer)
+    # ---------------------------------------------------------
+    # FIX:
+    #
+    # A value such as "5 ملايين" produces:
+    #
+    #     answer_numbers  -> {"5"}
+    #     answer_millions -> {"5 million"}
+    #
+    # If the evidence says "خمسة ملايين", then:
+    #
+    #     evidence_numbers  -> {}
+    #     evidence_millions -> {"5 million"}
+    #
+    # The old validator incorrectly marked "5" as unsupported.
+    #
+    # We therefore allow the numeric base of a million value when
+    # that complete million value is already supported by the evidence
+    # or supplied by the user.
+    # ---------------------------------------------------------
 
+    validated_million_values = (
+        query_millions
+        | evidence_millions
+    )
+
+    validated_million_base_numbers = _million_base_numbers(
+        validated_million_values
+    )
+
+    unsupported_numbers = (
+        answer_numbers
+        - query_numbers
+        - evidence_numbers
+        - validated_million_base_numbers
+    )
+
+    answer_thresholds = _extract_threshold_values(answer)
     evidence_thresholds = _extract_threshold_values(evidence_text)
 
     # ---------------------------------------------------------
@@ -331,7 +388,9 @@ def validate_numeric_claims(
         and answer_thresholds
         and not answer_thresholds.issubset(evidence_thresholds)
     ):
-        unsupported_numbers.update(answer_thresholds - evidence_thresholds)
+        unsupported_numbers.update(
+            answer_thresholds - evidence_thresholds
+        )
 
     # ---------------------------------------------------------
     # Rule 3:
@@ -349,8 +408,6 @@ def validate_numeric_claims(
         if value in evidence_millions:
             continue
 
-        # If it is neither a user value nor an evidence value,
-        # it is unsupported.
         unsupported_numbers.add(value)
 
     # ---------------------------------------------------------
@@ -371,7 +428,11 @@ def validate_numeric_claims(
             if answer_value not in evidence_thresholds:
                 unsupported_numbers.add(answer_value)
 
-    evidence_numeric_values = evidence_numbers | evidence_millions | evidence_thresholds
+    evidence_numeric_values = (
+        evidence_numbers
+        | evidence_millions
+        | evidence_thresholds
+    )
 
     return (
         not unsupported_numbers,

@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "legal_chunks"
     ollama_url: str = "http://localhost:11434"
-    generation_model: str = "qwen2.5:3b"
+    generation_model: str = "qwen3:4b"
     health_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
 
     embedding_model: str = "intfloat/multilingual-e5-base"

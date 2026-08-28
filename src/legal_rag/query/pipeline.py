@@ -25,12 +25,19 @@ from legal_rag.query.models import (
     RetrievedChunk,
 )
 from legal_rag.query.ollama_client import OllamaGenerationClient
-from legal_rag.query.prompt_builder import GroundedPrompt, build_grounded_messages
+from legal_rag.query.prompt_builder import (
+    GroundedPrompt,
+    build_grounded_messages,
+)
 from legal_rag.query.reranker import get_default_reranker
 from legal_rag.query.retriever import RetrievalFilters
 from legal_rag.query.structured_answer import GeneratedAnswer
 
-_MODEL_CITATION_PATTERN = re.compile(r"\[\s*\d+\s*\]|\bE\d+\b", re.IGNORECASE)
+
+_MODEL_CITATION_PATTERN = re.compile(
+    r"\[\s*\d+\s*\]|\bE\d+\b",
+    re.IGNORECASE,
+)
 
 
 class GenerationClient(Protocol):
@@ -89,7 +96,12 @@ class RAGAnswerPipeline:
         self._retriever = retriever
         self._reranker = reranker or get_default_reranker()
         self._generator = generator or OllamaGenerationClient()
-        self._sufficiency_evaluator = sufficiency_evaluator or EvidenceSufficiencyEvaluator()
+
+        self._sufficiency_evaluator = (
+            sufficiency_evaluator
+            or EvidenceSufficiencyEvaluator()
+        )
+
         self._retrieve_top_k = retrieve_top_k
         self._rerank_top_n = rerank_top_n
         self._evidence_top_n = evidence_top_n
@@ -104,18 +116,45 @@ class RAGAnswerPipeline:
         language: str = "mixed",
         filters: RetrievalFilters | None = None,
     ) -> CitedAnswer:
+
+        # ---------------------------------------------------------------
+        # 1. Dense retrieval
+        # ---------------------------------------------------------------
+
         retrieved = self._retriever.search(
             query,
             top_k=self._retrieve_top_k,
             filters=filters,
         )
-        candidates = _diversify_candidates(retrieved, max_per_document=4)
+
+        # ---------------------------------------------------------------
+        # 2. Diversify candidates
+        # ---------------------------------------------------------------
+
+        candidates = _diversify_candidates(
+            retrieved,
+            max_per_document=4,
+        )
+
+        # ---------------------------------------------------------------
+        # 3. Cross-encoder reranking
+        # ---------------------------------------------------------------
+
         reranked = self._reranker.rerank(
             query,
             candidates,
             top_n=self._rerank_top_n,
         )
-        assessment = self._sufficiency_evaluator.assess(query, retrieved, reranked)
+
+        # ---------------------------------------------------------------
+        # 4. Evidence sufficiency gate
+        # ---------------------------------------------------------------
+
+        assessment = self._sufficiency_evaluator.assess(
+            query,
+            retrieved,
+            reranked,
+        )
 
         if not assessment.sufficient:
             return self._insufficient_answer(
@@ -125,19 +164,55 @@ class RAGAnswerPipeline:
                 assessment=assessment,
             )
 
+        # ---------------------------------------------------------------
+        # 5. Select evidence
+        #
+        # IMPORTANT:
+        # Evidence selection is now query-aware.
+        #
+        # If the question contains an explicit article number, prefer
+        # chunks belonging to that exact article.
+        # ---------------------------------------------------------------
+
         evidence = _select_evidence(
+            query=query,
             retrieved=retrieved,
             reranked=reranked,
             top_n=self._evidence_top_n,
             maximum_dense_score_drop=self._maximum_dense_score_drop,
         )
+
+        if not evidence:
+            return self._insufficient_answer(
+                query=query,
+                language=language,
+                retrieved=retrieved,
+                assessment=replace(
+                    assessment,
+                    sufficient=False,
+                    reason="no_safe_evidence_selected",
+                ),
+            )
+
+        # ---------------------------------------------------------------
+        # 6. Build grounded prompt
+        # ---------------------------------------------------------------
+
         prompt = build_grounded_messages(
             query,
             evidence,
             language=language,
             maximum_context_characters=self._maximum_context_characters,
         )
-        generated = self._generate_structured(prompt, language=language)
+
+        # ---------------------------------------------------------------
+        # 7. Structured generation
+        # ---------------------------------------------------------------
+
+        generated = self._generate_structured(
+            prompt,
+            language=language,
+        )
 
         if generated is None:
             return self._generation_failure_answer(
@@ -149,6 +224,10 @@ class RAGAnswerPipeline:
                 prompt_version=prompt.prompt_version,
             )
 
+        # ---------------------------------------------------------------
+        # 8. Model-level insufficient evidence
+        # ---------------------------------------------------------------
+
         if generated.insufficient_evidence:
             return self._insufficient_answer(
                 query=query,
@@ -159,36 +238,105 @@ class RAGAnswerPipeline:
                 prompt_version=prompt.prompt_version,
             )
 
-        selected_pairs = [
-            (
-                prompt.citations_by_evidence_id[evidence_id],
-                prompt.chunks_by_evidence_id[evidence_id],
+        # ---------------------------------------------------------------
+        # 9. Validate returned evidence IDs
+        # ---------------------------------------------------------------
+
+        selected_pairs = []
+
+        for evidence_id in generated.evidence_ids:
+            citation = prompt.citations_by_evidence_id.get(
+                evidence_id
             )
-            for evidence_id in generated.evidence_ids
-        ]
+            chunk = prompt.chunks_by_evidence_id.get(
+                evidence_id
+            )
+
+            if citation is None or chunk is None:
+                continue
+
+            selected_pairs.append(
+                (
+                    citation,
+                    chunk,
+                )
+            )
+
+        if not selected_pairs:
+            return self._generation_failure_answer(
+                query=query,
+                language=language,
+                retrieved=retrieved,
+                assessment=replace(
+                    assessment,
+                    sufficient=False,
+                    reason="model_returned_no_valid_evidence",
+                ),
+                used_chunk_count=len(evidence),
+                prompt_version=prompt.prompt_version,
+            )
+
+        # ---------------------------------------------------------------
+        # 10. Citations
+        # ---------------------------------------------------------------
+
         citations = [
-            replace(citation, marker=f"[{index}]")
-            for index, (citation, _) in enumerate(selected_pairs, start=1)
+            replace(
+                citation,
+                marker=f"[{index}]",
+            )
+            for index, (citation, _) in enumerate(
+                selected_pairs,
+                start=1,
+            )
         ]
-        selected_chunks = [chunk for _, chunk in selected_pairs]
-        evidence_text = "\n\n".join(chunk.text for chunk in selected_chunks)
-        is_valid, unsupported_numbers, _ = validate_numeric_claims(
-            query,
-            generated.answer,
-            evidence_text,
+
+        selected_chunks = [
+            chunk
+            for _, chunk in selected_pairs
+        ]
+
+        # ---------------------------------------------------------------
+        # 11. Numeric claim validation
+        # ---------------------------------------------------------------
+
+        evidence_text = "\n\n".join(
+            chunk.text
+            for chunk in selected_chunks
+        )
+
+        is_valid, unsupported_numbers, _ = (
+            validate_numeric_claims(
+                query,
+                generated.answer,
+                evidence_text,
+            )
         )
 
         if not is_valid:
-            answer_text = _validation_failure_message(language, unsupported_numbers)
+            answer_text = _validation_failure_message(
+                language,
+                unsupported_numbers,
+            )
+
             citations = []
             selected_chunks = []
+
             assessment = replace(
                 assessment,
                 sufficient=False,
                 reason="numeric_validation_failure",
             )
+
         else:
-            answer_text = _attach_citations(generated.answer, citations)
+            answer_text = _attach_citations(
+                generated.answer,
+                citations,
+            )
+
+        # ---------------------------------------------------------------
+        # 12. Legal excerpts
+        # ---------------------------------------------------------------
 
         legal_excerpts = [
             LegalExcerpt(
@@ -199,7 +347,11 @@ class RAGAnswerPipeline:
                 page=chunk.page,
                 chunk_id=chunk.chunk_id,
             )
-            for citation, chunk in zip(citations, selected_chunks, strict=True)
+            for citation, chunk in zip(
+                citations,
+                selected_chunks,
+                strict=True,
+            )
         ]
 
         return CitedAnswer(
@@ -207,7 +359,10 @@ class RAGAnswerPipeline:
             answer_text=answer_text,
             language=language,
             citations=citations,
-            retrieved_chunk_ids=[chunk.chunk_id for chunk in retrieved],
+            retrieved_chunk_ids=[
+                chunk.chunk_id
+                for chunk in retrieved
+            ],
             legal_excerpts=legal_excerpts,
             retrieval=_diagnostics(
                 assessment,
@@ -217,19 +372,28 @@ class RAGAnswerPipeline:
             prompt_version=prompt.prompt_version,
         )
 
+    # -------------------------------------------------------------------
+    # Generation
+    # -------------------------------------------------------------------
+
     def _generate_structured(
         self,
         prompt: GroundedPrompt,
         *,
         language: str,
     ) -> GeneratedAnswer | None:
+
         schema = GeneratedAnswer.model_json_schema()
         attempts = self._generation_retry_count + 1
 
         for attempt in range(attempts):
+
             repair_instruction = ""
+
             if attempt:
-                repair_instruction = _repair_instruction(language)
+                repair_instruction = _repair_instruction(
+                    language
+                )
 
             raw_response = self._generator.generate(
                 prompt.user + repair_instruction,
@@ -237,24 +401,53 @@ class RAGAnswerPipeline:
                 system=prompt.system,
                 format_schema=schema,
             )
+
             try:
-                generated = GeneratedAnswer.model_validate_json(raw_response)
+                generated = GeneratedAnswer.model_validate_json(
+                    raw_response
+                )
             except ValidationError:
                 continue
 
-            allowed_ids = set(prompt.citations_by_evidence_id)
-            returned_ids = set(generated.evidence_ids)
+            allowed_ids = set(
+                prompt.citations_by_evidence_id
+            )
+
+            returned_ids = set(
+                generated.evidence_ids
+            )
+
+            # Never allow citations outside supplied evidence.
             if not returned_ids <= allowed_ids:
                 continue
-            if not generated.insufficient_evidence and not returned_ids:
+
+            # A non-insufficient answer must cite evidence.
+            if (
+                not generated.insufficient_evidence
+                and not returned_ids
+            ):
                 continue
-            if _MODEL_CITATION_PATTERN.search(generated.answer):
+
+            # Model must not manufacture citation markers.
+            if _MODEL_CITATION_PATTERN.search(
+                generated.answer
+            ):
                 continue
-            if not answer_matches_language(generated.answer, language):
+
+            # Enforce requested answer language.
+            if not answer_matches_language(
+                generated.answer,
+                language,
+            ):
                 continue
+
             return generated
 
         return None
+
+    # -------------------------------------------------------------------
+    # Insufficient evidence
+    # -------------------------------------------------------------------
 
     def _insufficient_answer(
         self,
@@ -266,25 +459,28 @@ class RAGAnswerPipeline:
         reason: str | None = None,
         prompt_version: str | None = None,
     ) -> CitedAnswer:
+
         final_assessment = (
             assessment
             if reason is None
-            else EvidenceAssessment(
+            else replace(
+                assessment,
                 sufficient=False,
                 reason=reason,
-                top_dense_score=assessment.top_dense_score,
-                dense_score_margin=assessment.dense_score_margin,
-                top_rerank_score=assessment.top_rerank_score,
-                exact_identifier_match=assessment.exact_identifier_match,
-                source_count=assessment.source_count,
             )
         )
+
         return CitedAnswer(
             query=query,
-            answer_text=_no_evidence_message(language),
+            answer_text=_no_evidence_message(
+                language
+            ),
             language=language,
             citations=[],
-            retrieved_chunk_ids=[chunk.chunk_id for chunk in retrieved],
+            retrieved_chunk_ids=[
+                chunk.chunk_id
+                for chunk in retrieved
+            ],
             legal_excerpts=[],
             retrieval=_diagnostics(
                 final_assessment,
@@ -293,6 +489,10 @@ class RAGAnswerPipeline:
             ),
             prompt_version=prompt_version,
         )
+
+    # -------------------------------------------------------------------
+    # Generation failure
+    # -------------------------------------------------------------------
 
     def _generation_failure_answer(
         self,
@@ -304,21 +504,24 @@ class RAGAnswerPipeline:
         used_chunk_count: int,
         prompt_version: str,
     ) -> CitedAnswer:
-        failed_assessment = EvidenceAssessment(
+
+        failed_assessment = replace(
+            assessment,
             sufficient=False,
             reason="invalid_structured_generation",
-            top_dense_score=assessment.top_dense_score,
-            dense_score_margin=assessment.dense_score_margin,
-            top_rerank_score=assessment.top_rerank_score,
-            exact_identifier_match=assessment.exact_identifier_match,
-            source_count=assessment.source_count,
         )
+
         return CitedAnswer(
             query=query,
-            answer_text=_generation_failure_message(language),
+            answer_text=_generation_failure_message(
+                language
+            ),
             language=language,
             citations=[],
-            retrieved_chunk_ids=[chunk.chunk_id for chunk in retrieved],
+            retrieved_chunk_ids=[
+                chunk.chunk_id
+                for chunk in retrieved
+            ],
             legal_excerpts=[],
             retrieval=_diagnostics(
                 failed_assessment,
@@ -329,6 +532,11 @@ class RAGAnswerPipeline:
         )
 
 
+# =========================================================================
+# Candidate diversification
+# =========================================================================
+
+
 def _diversify_candidates(
     chunks: list[RetrievedChunk],
     max_per_document: int = 4,
@@ -336,61 +544,216 @@ def _diversify_candidates(
     """Keep at most ``max_per_document`` candidates from each document."""
 
     selected: list[RetrievedChunk] = []
+
     document_counts: dict[str, int] = defaultdict(int)
+
     for chunk in chunks:
-        document_key = chunk.document_id or chunk.source_file or chunk.chunk_id
+
+        document_key = (
+            chunk.document_id
+            or chunk.source_file
+            or chunk.chunk_id
+        )
+
         if document_counts[document_key] >= max_per_document:
             continue
+
         selected.append(chunk)
         document_counts[document_key] += 1
+
     return selected
+
+
+# =========================================================================
+# Evidence selection
+# =========================================================================
 
 
 def _select_evidence(
     *,
+    query: str,
     retrieved: list[RetrievedChunk],
     reranked: list[RerankedChunk],
     top_n: int,
     maximum_dense_score_drop: float,
 ) -> list[RerankedChunk]:
-    """Preserve dense top and admit only similarly strong extra chunks."""
+    """Select the safest evidence for grounded generation.
 
-    if top_n <= 0 or not retrieved:
+    Selection priority:
+
+    1. Exact article match when the query explicitly names an article.
+    2. Cross-encoder ranking.
+    3. Dense-score safety constraint.
+
+    This prevents an unrelated article from entering the context merely
+    because it has a high reranker score or shares generic legal words.
+    """
+
+    if top_n <= 0 or not reranked:
         return []
 
-    reranked_by_id = {chunk.chunk_id: chunk for chunk in reranked}
-    dense_top = retrieved[0]
-    selected = [reranked_by_id.get(dense_top.chunk_id) or _as_reranked(dense_top)]
-    selected_ids = {dense_top.chunk_id}
+    dense_scores = {
+        chunk.chunk_id: chunk.score
+        for chunk in retrieved
+    }
+
+    best_dense_score = max(
+        dense_scores.values(),
+        default=None,
+    )
+
+    query_identifiers = _extract_article_identifiers(
+        query
+    )
+
+    selected: list[RerankedChunk] = []
+    selected_ids: set[str] = set()
+
+    # ---------------------------------------------------------------
+    # First pass:
+    # exact article matches
+    # ---------------------------------------------------------------
+
+    if query_identifiers:
+
+        for chunk in reranked:
+
+            if len(selected) >= top_n:
+                break
+
+            if chunk.chunk_id in selected_ids:
+                continue
+
+            if not _chunk_matches_article(
+                chunk,
+                query_identifiers,
+            ):
+                continue
+
+            dense_score = dense_scores.get(
+                chunk.chunk_id
+            )
+
+            if (
+                dense_score is not None
+                and best_dense_score is not None
+                and (
+                    best_dense_score - dense_score
+                    > maximum_dense_score_drop
+                )
+            ):
+                continue
+
+            selected.append(chunk)
+            selected_ids.add(chunk.chunk_id)
+
+    # ---------------------------------------------------------------
+    # Second pass:
+    # fill remaining slots with reranked evidence.
+    #
+    # But when the query has an explicit article number, do NOT add
+    # unrelated article chunks.
+    # ---------------------------------------------------------------
 
     for chunk in reranked:
+
         if len(selected) >= top_n:
             break
+
         if chunk.chunk_id in selected_ids:
             continue
-        if dense_top.score - chunk.score > maximum_dense_score_drop:
+
+        if query_identifiers:
+            if not _chunk_matches_article(
+                chunk,
+                query_identifiers,
+            ):
+                continue
+
+        dense_score = dense_scores.get(
+            chunk.chunk_id
+        )
+
+        if (
+            dense_score is not None
+            and best_dense_score is not None
+            and (
+                best_dense_score - dense_score
+                > maximum_dense_score_drop
+            )
+        ):
             continue
+
         selected.append(chunk)
         selected_ids.add(chunk.chunk_id)
+
     return selected
 
 
-def _as_reranked(chunk: RetrievedChunk) -> RerankedChunk:
-    return RerankedChunk(
-        chunk_id=chunk.chunk_id,
-        document_id=chunk.document_id,
-        score=chunk.score,
-        text=chunk.text,
-        source_file=chunk.source_file,
-        section_type=chunk.section_type,
-        section_title=chunk.section_title,
-        page=chunk.page,
-        language=chunk.language,
-        document_type=chunk.document_type,
-        source=chunk.source,
-        payload=chunk.payload,
-        rerank_score=float("-inf"),
+# =========================================================================
+# Article extraction
+# =========================================================================
+
+
+def _extract_article_identifiers(
+    text: str,
+) -> set[str]:
+    """Extract Arabic/English article numbers from text."""
+
+    patterns = (
+        r"(?:المادة|مادة|article)"
+        r"\s*(?:رقم|no\.?|number)?"
+        r"\s*[\(\[\{]?"
+        r"([0-9٠-٩]+)"
+        r"[\)\]\}]?",
     )
+
+    identifiers: set[str] = set()
+
+    for pattern in patterns:
+
+        for match in re.finditer(
+            pattern,
+            text,
+            re.IGNORECASE,
+        ):
+            identifiers.add(
+                _normalize_digits(
+                    match.group(1)
+                )
+            )
+
+    return identifiers
+
+
+def _chunk_matches_article(
+    chunk: RerankedChunk,
+    query_identifiers: set[str],
+) -> bool:
+    """Return True if the chunk belongs to an article named by query."""
+
+    evidence = "\n".join(
+        part
+        for part in (
+            chunk.section_title,
+            chunk.text,
+        )
+        if part
+    )
+
+    evidence_identifiers = _extract_article_identifiers(
+        evidence
+    )
+
+    return bool(
+        query_identifiers
+        & evidence_identifiers
+    )
+
+
+# =========================================================================
+# Diagnostics
+# =========================================================================
 
 
 def _diagnostics(
@@ -399,6 +762,7 @@ def _diagnostics(
     candidate_count: int,
     used_chunk_count: int,
 ) -> RetrievalDiagnostics:
+
     return RetrievalDiagnostics(
         strategy="dense_plus_cross_encoder",
         candidate_count=candidate_count,
@@ -413,37 +777,114 @@ def _diagnostics(
     )
 
 
-def _attach_citations(answer: str, citations: list[Citation]) -> str:
-    markers = " ".join(citation.marker for citation in citations)
+# =========================================================================
+# Citations
+# =========================================================================
+
+
+def _attach_citations(
+    answer: str,
+    citations: list[Citation],
+) -> str:
+
+    markers = " ".join(
+        citation.marker
+        for citation in citations
+    )
+
     return f"{answer.strip()} {markers}".strip()
 
 
-def _repair_instruction(language: str) -> str:
+# =========================================================================
+# Retry / messages
+# =========================================================================
+
+
+def _repair_instruction(
+    language: str,
+) -> str:
+
     if language == "ar":
         return (
-            "\n\nكانت الاستجابة السابقة غير صالحة. أعد كائن JSON مطابقاً للمخطط فقط، "
-            "واكتب حقل answer باللغة العربية فقط، واستخدم حصراً evidence_ids المتاحة."
+            "\n\nكانت الاستجابة السابقة غير صالحة. "
+            "أعد كائن JSON مطابقاً للمخطط فقط، "
+            "واكتب حقل answer باللغة العربية فقط، "
+            "واستخدم حصراً evidence_ids المتاحة."
         )
+
     return (
-        "\n\nThe previous response was invalid. Return schema-valid JSON only, "
-        "write the answer in the required language, and use only supplied evidence_ids."
+        "\n\nThe previous response was invalid. "
+        "Return schema-valid JSON only, "
+        "write the answer in the required language, "
+        "and use only supplied evidence_ids."
     )
 
 
-def _no_evidence_message(language: str) -> str:
+def _no_evidence_message(
+    language: str,
+) -> str:
+
     if language == "ar":
-        return "المعلومات المتاحة في المستندات المفهرسة غير كافية للإجابة عن هذا السؤال."
-    return "The indexed documents do not contain sufficient evidence to answer this question."
+        return (
+            "المعلومات المتاحة في المستندات المفهرسة "
+            "غير كافية للإجابة عن هذا السؤال."
+        )
+
+    return (
+        "The indexed documents do not contain "
+        "sufficient evidence to answer this question."
+    )
 
 
-def _generation_failure_message(language: str) -> str:
+def _generation_failure_message(
+    language: str,
+) -> str:
+
     if language == "ar":
-        return "تعذر إنتاج إجابة يمكن التحقق من استشهاداتها من الأدلة المتاحة."
-    return "A citation-valid answer could not be produced from the available evidence."
+        return (
+            "تعذر إنتاج إجابة يمكن التحقق "
+            "من استشهاداتها من الأدلة المتاحة."
+        )
+
+    return (
+        "A citation-valid answer could not be "
+        "produced from the available evidence."
+    )
 
 
-def _validation_failure_message(language: str, unsupported_numbers: set[str]) -> str:
-    numbers = ", ".join(sorted(unsupported_numbers))
+def _validation_failure_message(
+    language: str,
+    unsupported_numbers: set[str],
+) -> str:
+
+    numbers = ", ".join(
+        sorted(unsupported_numbers)
+    )
+
     if language == "ar":
-        return f"تعذر اعتماد الإجابة لأن أرقاماً غير مدعومة ظهرت فيها: {numbers}."
-    return f"The answer contained unsupported numeric values: {numbers}."
+        return (
+            "تعذر اعتماد الإجابة لأن أرقاماً "
+            f"غير مدعومة ظهرت فيها: {numbers}."
+        )
+
+    return (
+        "The answer contained unsupported "
+        f"numeric values: {numbers}."
+    )
+
+
+# =========================================================================
+# Digit normalization
+# =========================================================================
+
+
+def _normalize_digits(
+    value: str,
+) -> str:
+
+    translation = str.maketrans(
+        "٠١٢٣٤٥٦٧٨٩",
+        "0123456789",
+    )
+
+    return value.translate(translation)

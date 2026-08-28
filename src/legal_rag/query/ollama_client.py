@@ -32,8 +32,10 @@ class OllamaGenerationClient:
             "stream": False,
             "options": {"temperature": temperature},
         }
+
         if system is not None:
             payload["system"] = system
+
         if format_schema is not None:
             payload["format"] = dict(format_schema)
 
@@ -42,8 +44,24 @@ class OllamaGenerationClient:
             json=payload,
             timeout=self._timeout,
         )
+
+        if response.status_code >= 400:
+            print("\n========== OLLAMA ERROR ==========")
+            print(f"Status: {response.status_code}")
+            print(f"Model: {self._model}")
+            print(f"Prompt characters: {len(prompt)}")
+            print(f"System characters: {len(system or '')}")
+            print(f"Format schema: {format_schema is not None}")
+            print(f"Response: {response.text}")
+            print("==================================\n")
+
         response.raise_for_status()
+
         generated = response.json().get("response")
+
         if not isinstance(generated, str):
-            raise ValueError("Ollama response did not contain generated text")
+            raise ValueError(
+                "Ollama response did not contain generated text"
+            )
+
         return generated.strip()

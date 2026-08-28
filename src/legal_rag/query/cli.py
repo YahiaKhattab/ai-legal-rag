@@ -28,6 +28,7 @@ def _build_pipeline(
         url=settings.qdrant_url,
         collection_name=settings.qdrant_collection,
     )
+
     retriever = LegalRetriever(
         store=store,
         embedder=QueryEmbedder(
@@ -35,23 +36,27 @@ def _build_pipeline(
             device=settings.embedding_device,
         ),
     )
+
     reranker = CrossEncoderReranker(
         model_name=settings.rerank_model,
         device=settings.rerank_device,
     )
+
     generator = OllamaGenerationClient(
         base_url=settings.ollama_url,
         model=settings.generation_model,
         timeout_seconds=settings.generation_timeout_seconds,
     )
+
     sufficiency_evaluator = EvidenceSufficiencyEvaluator(
         EvidenceSufficiencyConfig(
             enabled=settings.evidence_sufficiency_enabled,
             minimum_dense_score=settings.experimental_min_dense_score,
             identifier_override_score=settings.experimental_identifier_override_score,
-            minimum_rerank_score=settings.experimental_min_rerank_score,
+            minimum_rerank_score=None,
         )
     )
+
     return RAGAnswerPipeline(
         retriever=retriever,
         reranker=reranker,
@@ -68,7 +73,9 @@ def _build_pipeline(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Query the AI Legal RAG system.")
+    parser = argparse.ArgumentParser(
+        description="Query the AI Legal RAG system."
+    )
 
     parser.add_argument(
         "query",
@@ -106,7 +113,9 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
     settings = Settings()
+
     retrieve_top_k = args.top_k or settings.retrieval_top_k
     rerank_top_n = args.top_n or settings.rerank_top_n
 
@@ -127,58 +136,114 @@ def main() -> None:
         filters=filters,
     )
 
-    print("\nAnswer:")
-    print(result.answer_text)
+    # ============================================================
+    # LEGAL RAG RESULT
+    # ============================================================
+
+    print("\n" + "=" * 70)
+    print("                    LEGAL RAG RESULT")
+    print("=" * 70)
+
+    # ============================================================
+    # QUESTION
+    # ============================================================
+
+    print("\nQUESTION")
+    print("-" * 70)
+    print(args.query)
+
+    # ============================================================
+    # ANSWER
+    # ============================================================
+
+    print("\nANSWER")
+    print("-" * 70)
+    print(result.answer_text.strip())
+
+        # ============================================================
+    # EVIDENCE STATUS
+    # ============================================================
 
     if result.retrieval is not None:
         retrieval = result.retrieval
-        print("\nRetrieval:")
-        print(f"  Decision: {'sufficient' if retrieval.sufficient else 'insufficient'}")
-        print(f"  Reason: {retrieval.reason}")
-        print(f"  Candidates: {retrieval.candidate_count}")
-        print(f"  Used chunks: {retrieval.used_chunk_count}")
-        if retrieval.top_dense_score is not None:
-            print(f"  Top dense score: {retrieval.top_dense_score:.4f}")
-        if retrieval.top_rerank_score is not None:
-            print(f"  Top rerank score: {retrieval.top_rerank_score:.4f}")
-        if result.prompt_version is not None:
-            print(f"  Prompt version: {result.prompt_version}")
+
+        print("\nEVIDENCE STATUS")
+        print("-" * 70)
+
+        if retrieval.sufficient:
+            print("✓ Evidence found")
+            print(
+                f"✓ {retrieval.used_chunk_count} legal "
+                f"source{'s' if retrieval.used_chunk_count != 1 else ''} used"
+            )
+        else:
+            print("✗ Insufficient legal evidence")
+            
+    # ============================================================
+    # SELECTED LEGAL EVIDENCE
+    # ============================================================
 
     if result.legal_excerpts:
-        print("\nLegal Evidence:")
+        print("\nSELECTED LEGAL EVIDENCE")
+        print("-" * 70)
 
-        for excerpt in result.legal_excerpts:
-            print(f"\n{excerpt.marker}")
+        for index, excerpt in enumerate(
+            result.legal_excerpts,
+            start=1,
+        ):
+            print(f"\n[{index}] {excerpt.marker}")
 
-            print(excerpt.text.strip())
-
-            print(f"\nSource: {excerpt.source_file or excerpt.chunk_id}")
+            print(
+                f"Source  : "
+                f"{excerpt.source_file or excerpt.chunk_id}"
+            )
 
             if excerpt.page is not None:
-                print(f"Page: {excerpt.page}")
+                print(f"Page    : {excerpt.page}")
 
             if excerpt.section_title:
-                print(f"Section: {excerpt.section_title}")
+                print(
+                    f"Section : "
+                    f"{excerpt.section_title}"
+                )
+
+            print("\nEvidence:")
+            print(excerpt.text.strip())
+
+    # ============================================================
+    # CITATIONS
+    # ============================================================
 
     if result.citations:
-        print("\nSources:")
+        print("\nCITATIONS")
+        print("-" * 70)
 
         for citation in result.citations:
             locator_parts = []
 
             if citation.section_title:
-                locator_parts.append(citation.section_title)
+                locator_parts.append(
+                    citation.section_title
+                )
 
             if citation.page is not None:
-                locator_parts.append(f"Page {citation.page}")
+                locator_parts.append(
+                    f"Page {citation.page}"
+                )
 
-            locator = " — ".join(locator_parts) if locator_parts else ""
+            locator = " — ".join(locator_parts)
 
             print(
-                f"  {citation.marker} "
+                f"{citation.marker} "
                 f"{citation.source_file or citation.document_id}"
                 f"{' — ' + locator if locator else ''}"
             )
+
+    # ============================================================
+    # END
+    # ============================================================
+
+    print("\n" + "=" * 70)
 
 
 if __name__ == "__main__":

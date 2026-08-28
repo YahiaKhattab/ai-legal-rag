@@ -46,6 +46,8 @@ COPY --chown=appuser:appuser pyproject.toml ./
 COPY --chown=appuser:appuser src ./src
 COPY --chown=appuser:appuser legal_rag_api ./legal_rag_api
 
+RUN chown -R appuser:appuser /app
+
 USER appuser
 
 # Install the package with the OCR extra (paddleocr + paddlepaddle).

@@ -8,10 +8,13 @@ from typing import Any
 
 @dataclass(frozen=True)
 class RetrievedChunk:
+    """A chunk returned by the dense retrieval stage."""
+
     chunk_id: str
     document_id: str
     score: float
     text: str
+
     source_file: str | None = None
     section_type: str | None = None
     section_title: str | None = None
@@ -19,19 +22,25 @@ class RetrievedChunk:
     language: str | None = None
     document_type: str | None = None
     source: str | None = None
+
     payload: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class RerankedChunk(RetrievedChunk):
+    """A retrieved chunk after cross-encoder reranking."""
+
     rerank_score: float = 0.0
 
 
 @dataclass(frozen=True)
 class Citation:
+    """Metadata used to expose a selected legal evidence citation."""
+
     marker: str
     chunk_id: str
     document_id: str
+
     source_file: str | None
     section_title: str | None
     page: int | None
@@ -43,9 +52,11 @@ class LegalExcerpt:
 
     marker: str
     text: str
+
     source_file: str | None
     section_title: str | None
     page: int | None
+
     chunk_id: str
 
 
@@ -54,24 +65,38 @@ class RetrievalDiagnostics:
     """Observable retrieval signals used by the sufficiency gate."""
 
     strategy: str
+
     candidate_count: int
     used_chunk_count: int
+
     sufficient: bool
     reason: str
+
     top_dense_score: float | None
     dense_score_margin: float | None
     top_rerank_score: float | None
+
     exact_identifier_match: bool
+
     source_count: int
 
 
 @dataclass(frozen=True)
 class CitedAnswer:
+    """Final answer returned by the grounded legal RAG pipeline."""
+
     query: str
     answer_text: str
     language: str
+
     citations: list[Citation]
+
     retrieved_chunk_ids: list[str]
-    legal_excerpts: list[LegalExcerpt] = field(default_factory=list)
+
+    legal_excerpts: list[LegalExcerpt] = field(
+        default_factory=list
+    )
+
     retrieval: RetrievalDiagnostics | None = None
+
     prompt_version: str | None = None
