@@ -15,6 +15,12 @@ from legal_rag.query.reranker import CrossEncoderReranker
 from legal_rag.query.retriever import LegalRetriever, RetrievalFilters
 from legal_rag.vector_store.qdrant import QdrantVectorStore
 
+_GENERATION_FAILURE_REASONS = {
+    "invalid_structured_generation",
+    "model_returned_no_valid_evidence",
+    "numeric_validation_failure",
+}
+
 
 def _build_pipeline(
     settings: Settings,
@@ -53,7 +59,7 @@ def _build_pipeline(
             enabled=settings.evidence_sufficiency_enabled,
             minimum_dense_score=settings.experimental_min_dense_score,
             identifier_override_score=settings.experimental_identifier_override_score,
-            minimum_rerank_score=None,
+            minimum_rerank_score=settings.experimental_min_rerank_score,
         )
     )
 
@@ -73,9 +79,7 @@ def _build_pipeline(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Query the AI Legal RAG system."
-    )
+    parser = argparse.ArgumentParser(description="Query the AI Legal RAG system.")
 
     parser.add_argument(
         "query",
@@ -160,7 +164,7 @@ def main() -> None:
     print("-" * 70)
     print(result.answer_text.strip())
 
-        # ============================================================
+    # ============================================================
     # EVIDENCE STATUS
     # ============================================================
 
@@ -170,15 +174,37 @@ def main() -> None:
         print("\nEVIDENCE STATUS")
         print("-" * 70)
 
+        generation_failed = retrieval.reason in _GENERATION_FAILURE_REASONS
+
         if retrieval.sufficient:
             print("✓ Evidence found")
             print(
                 f"✓ {retrieval.used_chunk_count} legal "
                 f"source{'s' if retrieval.used_chunk_count != 1 else ''} used"
             )
+        elif generation_failed:
+            print("✗ Evidence was retrieved, but answer validation failed")
         else:
             print("✗ Insufficient legal evidence")
-            
+
+        if generation_failed:
+            decision = "generation_failure"
+        elif retrieval.sufficient:
+            decision = "sufficient"
+        else:
+            decision = "insufficient"
+
+        print(f"Decision: {decision}")
+        print(f"Reason: {retrieval.reason}")
+        print(f"Candidates: {retrieval.candidate_count}")
+        print(f"Used chunks: {retrieval.used_chunk_count}")
+
+        if retrieval.top_dense_score is not None:
+            print(f"Top dense score: {retrieval.top_dense_score:.4f}")
+
+        if retrieval.top_rerank_score is not None:
+            print(f"Top rerank score: {retrieval.top_rerank_score:.4f}")
+
     # ============================================================
     # SELECTED LEGAL EVIDENCE
     # ============================================================
@@ -193,19 +219,13 @@ def main() -> None:
         ):
             print(f"\n[{index}] {excerpt.marker}")
 
-            print(
-                f"Source  : "
-                f"{excerpt.source_file or excerpt.chunk_id}"
-            )
+            print(f"Source  : {excerpt.source_file or excerpt.chunk_id}")
 
             if excerpt.page is not None:
                 print(f"Page    : {excerpt.page}")
 
             if excerpt.section_title:
-                print(
-                    f"Section : "
-                    f"{excerpt.section_title}"
-                )
+                print(f"Section : {excerpt.section_title}")
 
             print("\nEvidence:")
             print(excerpt.text.strip())
@@ -222,14 +242,10 @@ def main() -> None:
             locator_parts = []
 
             if citation.section_title:
-                locator_parts.append(
-                    citation.section_title
-                )
+                locator_parts.append(citation.section_title)
 
             if citation.page is not None:
-                locator_parts.append(
-                    f"Page {citation.page}"
-                )
+                locator_parts.append(f"Page {citation.page}")
 
             locator = " — ".join(locator_parts)
 

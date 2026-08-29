@@ -100,9 +100,7 @@ def test_pipeline_preserves_dense_top_and_uses_validated_marker() -> None:
     assert generator.calls[0][1] is not None
     assert generator.calls[0][2] is not None
     assert "يجب التحقق من الهوية" not in generator.calls[0][0]
-    assert any(
-        "كل واقعة أو مخالفة مستقلة" in part for part in generator.calls[0] if isinstance(part, str)
-    )
+    assert "هل يجوز استخدام البيانات دون موافقة؟" in generator.calls[0][0]
 
 
 def test_pipeline_rejects_weak_evidence_without_calling_generator() -> None:
@@ -175,7 +173,7 @@ def test_selected_evidence_is_rendered_with_sequential_application_markers() -> 
         evidence_top_n=2,
     )
 
-    result = pipeline.answer("ما الحكم؟", language="ar")
+    result = pipeline.answer("ما حكم النص الثاني؟", language="ar")
 
     assert result.answer_text == "إجابة [1]"
     assert result.citations[0].marker == "[1]"

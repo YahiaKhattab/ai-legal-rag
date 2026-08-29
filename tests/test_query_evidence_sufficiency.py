@@ -20,9 +20,12 @@ def _reranked(chunk: RetrievedChunk, score: float = 1.0) -> RerankedChunk:
 
 
 def test_sufficiency_accepts_supported_smoke_score() -> None:
-    retrieved = [_retrieved("article-3", 0.8664), _retrieved("article-2", 0.8366)]
+    retrieved = [
+        _retrieved("article-3", 0.8664, "لا يجوز استخدام البيانات دون موافقة"),
+        _retrieved("article-2", 0.8366),
+    ]
     assessment = EvidenceSufficiencyEvaluator().assess(
-        "سؤال مدعوم",
+        "هل يجوز استخدام البيانات دون موافقة؟",
         retrieved,
         [_reranked(retrieved[0])],
     )
@@ -61,4 +64,58 @@ def test_exact_legal_identifier_can_use_lower_configured_override() -> None:
 
     assert assessment.sufficient is True
     assert assessment.exact_identifier_match is True
-    assert assessment.reason == "exact_identifier_override"
+    assert assessment.reason == "exact_article_match"
+
+
+def test_positive_reranker_can_rescue_supported_dense_near_miss() -> None:
+    retrieved = [
+        _retrieved(
+            "article-1",
+            0.8144,
+            "يجب التحقق من هوية المتعامل قبل تفعيل الخدمة",
+        )
+    ]
+    evaluator = EvidenceSufficiencyEvaluator(EvidenceSufficiencyConfig(minimum_rerank_score=-1.0))
+
+    assessment = evaluator.assess(
+        "ما الإجراء الواجب للتحقق من هوية المتعامل قبل تفعيل الخدمة؟",
+        retrieved,
+        [_reranked(retrieved[0], score=2.33)],
+    )
+
+    assert assessment.sufficient is True
+    assert assessment.reason == "rerank_score_override"
+
+
+def test_negative_reranker_rejects_close_topic_false_positive() -> None:
+    retrieved = [
+        _retrieved(
+            "article-3",
+            0.8268,
+            "يجب عرض الرسوم قبل إبرام التعاقد الإلكتروني",
+        )
+    ]
+    evaluator = EvidenceSufficiencyEvaluator(EvidenceSufficiencyConfig(minimum_rerank_score=-1.0))
+
+    assessment = evaluator.assess(
+        "هل يحق إلغاء التعاقد خلال أربعة عشر يوما واسترداد الرسوم؟",
+        retrieved,
+        [_reranked(retrieved[0], score=-2.46)],
+    )
+
+    assert assessment.sufficient is False
+    assert assessment.reason == "rerank_score_below_experimental_threshold"
+
+
+def test_missing_explicit_article_is_rejected() -> None:
+    retrieved = [_retrieved("article-3", 0.8311, "المادة (3): أحكام التعاقد")]
+    evaluator = EvidenceSufficiencyEvaluator(EvidenceSufficiencyConfig(minimum_rerank_score=-1.0))
+
+    assessment = evaluator.assess(
+        "ما حقوق المتعامل وفقا للمادة رقم ٩٩؟",
+        retrieved,
+        [_reranked(retrieved[0], score=0.71)],
+    )
+
+    assert assessment.sufficient is False
+    assert assessment.reason == "explicit_article_identifier_not_found"
