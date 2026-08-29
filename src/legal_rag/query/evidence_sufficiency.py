@@ -19,7 +19,6 @@ from dataclasses import dataclass
 
 from legal_rag.query.models import RerankedChunk, RetrievedChunk
 
-
 _IDENTIFIER_PATTERN = re.compile(
     r"(?:المادة|مادة|article)"
     r"\s*(?:رقم|no\.?|number)?"
@@ -87,31 +86,14 @@ class EvidenceSufficiencyEvaluator:
         reranked: list[RerankedChunk],
     ) -> EvidenceAssessment:
 
-        top_dense_score = (
-            retrieved[0].score
-            if retrieved
-            else None
-        )
+        top_dense_score = retrieved[0].score if retrieved else None
 
-        dense_score_margin = (
-            retrieved[0].score - retrieved[1].score
-            if len(retrieved) > 1
-            else None
-        )
+        dense_score_margin = retrieved[0].score - retrieved[1].score if len(retrieved) > 1 else None
 
-        top_rerank_score = (
-            reranked[0].rerank_score
-            if reranked
-            else None
-        )
+        top_rerank_score = reranked[0].rerank_score if reranked else None
 
         source_count = len(
-            {
-                chunk.document_id
-                or chunk.source_file
-                or chunk.chunk_id
-                for chunk in retrieved
-            }
+            {chunk.document_id or chunk.source_file or chunk.chunk_id for chunk in retrieved}
         )
 
         # ---------------------------------------------------------------
@@ -178,8 +160,19 @@ class EvidenceSufficiencyEvaluator:
         # Dense retrieval gate
         # ---------------------------------------------------------------
 
-        dense_sufficient = (
-            top_dense_score >= self._config.minimum_dense_score
+        dense_sufficient = top_dense_score >= self._config.minimum_dense_score
+
+        minimum_rerank_score = self._config.minimum_rerank_score
+
+        # A strong cross-encoder result can rescue a generic paraphrase
+        # that narrowly misses the dense threshold. Explicit article
+        # questions continue to use the stricter identifier override.
+        rerank_override = (
+            not dense_sufficient
+            and not query_identifiers
+            and minimum_rerank_score is not None
+            and top_rerank_score is not None
+            and top_rerank_score >= minimum_rerank_score
         )
 
         identifier_override = (
@@ -188,10 +181,19 @@ class EvidenceSufficiencyEvaluator:
             and top_dense_score >= self._config.identifier_override_score
         )
 
-        if not dense_sufficient and not identifier_override:
+        if not dense_sufficient and not identifier_override and not rerank_override:
             return result(
                 False,
                 "dense_score_below_experimental_threshold",
+            )
+
+        # An explicitly requested article must exist in the evidence that
+        # survived reranking. Otherwise generic vocabulary can make a
+        # different article look deceptively relevant.
+        if query_identifiers and not exact_identifier_match:
+            return result(
+                False,
+                "explicit_article_identifier_not_found",
             )
 
         # ---------------------------------------------------------------
@@ -204,7 +206,6 @@ class EvidenceSufficiencyEvaluator:
         # ---------------------------------------------------------------
 
         if query_identifiers and exact_identifier_match:
-
             # If the query explicitly names a law and we have a law match,
             # this is even stronger.
             if law_match:
@@ -226,17 +227,13 @@ class EvidenceSufficiencyEvaluator:
         # We need meaningful lexical overlap before allowing generation.
         # ---------------------------------------------------------------
 
-        if (
-    lexical_overlap < self._config.minimum_lexical_overlap
-    and not (
-        top_rerank_score is not None
-        and top_rerank_score >= 5.0
-           )
-          ):
-         return result(
-        False,
-           "insufficient_lexical_support",
-         )
+        if lexical_overlap < self._config.minimum_lexical_overlap and not (
+            top_rerank_score is not None and top_rerank_score >= 5.0
+        ):
+            return result(
+                False,
+                "insufficient_lexical_support",
+            )
 
         # ---------------------------------------------------------------
         # Optional raw rerank threshold.
@@ -246,8 +243,6 @@ class EvidenceSufficiencyEvaluator:
         #
         # A negative raw cross-encoder score is NOT inherently a failure.
         # ---------------------------------------------------------------
-
-        minimum_rerank_score = self._config.minimum_rerank_score
 
         if (
             minimum_rerank_score is not None
@@ -259,10 +254,13 @@ class EvidenceSufficiencyEvaluator:
                 "rerank_score_below_experimental_threshold",
             )
 
-        return result(
-            True,
-            "sufficient",
-        )
+        if rerank_override:
+            return result(
+                True,
+                "rerank_score_override",
+            )
+
+        return result(True, "sufficient")
 
 
 # ---------------------------------------------------------------------------
@@ -273,10 +271,7 @@ class EvidenceSufficiencyEvaluator:
 def _extract_identifiers(text: str) -> set[str]:
     """Extract explicit article identifiers."""
 
-    return {
-        _normalize_digits(match.group(1))
-        for match in _IDENTIFIER_PATTERN.finditer(text)
-    }
+    return {_normalize_digits(match.group(1)) for match in _IDENTIFIER_PATTERN.finditer(text)}
 
 
 def _has_exact_identifier_match_in_reranked(
@@ -303,9 +298,7 @@ def _has_exact_identifier_match_in_reranked(
             if part
         )
 
-        evidence_identifiers = _extract_identifiers(
-            evidence_text
-        )
+        evidence_identifiers = _extract_identifiers(evidence_text)
 
         if query_identifiers & evidence_identifiers:
             return True
@@ -416,9 +409,7 @@ def _best_lexical_overlap(
 
         evidence_tokens = _meaningful_tokens(evidence)
 
-        overlap = len(
-            query_tokens & evidence_tokens
-        )
+        overlap = len(query_tokens & evidence_tokens)
 
         score = overlap / max(
             len(query_tokens),
@@ -470,12 +461,7 @@ def _meaningful_tokens(text: str) -> set[str]:
         "and",
     }
 
-    return {
-        token
-        for token in normalized.split()
-        if len(token) >= 3
-        and token not in stop_words
-    }
+    return {token for token in normalized.split() if len(token) >= 3 and token not in stop_words}
 
 
 def _normalize_text(text: str) -> str:

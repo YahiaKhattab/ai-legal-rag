@@ -42,3 +42,4 @@ def test_ollama_client_sends_system_and_json_schema_separately(
     assert payload["system"] == "trusted system instructions"
     assert payload["prompt"] == "untrusted user data"
     assert payload["format"] == {"type": "object"}
+    assert payload["think"] is False

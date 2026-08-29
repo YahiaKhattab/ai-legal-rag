@@ -45,4 +45,4 @@ def test_ollama_requires_configured_model() -> None:
         result = check_ollama(client, Settings())
 
     assert result.status is HealthStatus.UNHEALTHY
-    assert "qwen2.5:3b" in result.detail
+    assert "qwen3:4b" in result.detail
