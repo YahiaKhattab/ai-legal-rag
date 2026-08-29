@@ -279,7 +279,7 @@ docker compose ps
 Install the configured Ollama model:
 
 ```powershell
-ollama pull qwen2.5:3b
+ollama pull qwen3:4b
 ```
 
 ### Health Check
