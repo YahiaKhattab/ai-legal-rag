@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     )
 
     qdrant_url: str = "http://localhost:6333"
+    qdrant_api_key: str | None = None
     qdrant_collection: str = "legal_chunks"
     ollama_url: str = "http://localhost:11434"
     generation_model: str = "qwen3:4b"
