@@ -31,8 +31,10 @@ class _OllamaTagsResponse(BaseModel):
 def check_qdrant(client: httpx.Client, settings: Settings) -> HealthResult:
     """Check whether Qdrant is ready to accept requests."""
 
+    headers = {"api-key": settings.qdrant_api_key} if settings.qdrant_api_key else {}
+
     try:
-        response = client.get(f"{settings.qdrant_url}/readyz")
+        response = client.get(f"{settings.qdrant_url}/readyz", headers=headers)
         response.raise_for_status()
     except httpx.HTTPError as exc:
         return HealthResult(

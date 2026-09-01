@@ -130,6 +130,7 @@ def _build_indexer(settings: Settings) -> QdrantIndexer:
 
     store = QdrantVectorStore(
         url=settings.qdrant_url,
+        api_key=settings.qdrant_api_key,
         collection_name=settings.qdrant_collection,
     )
 
