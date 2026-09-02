@@ -39,18 +39,14 @@ class EvidenceSufficiencyConfig:
     enabled: bool = True
 
     # Initial semantic retrieval gate.
-    minimum_dense_score: float = 0.82
+    minimum_dense_score: float = 0.855
 
     # Allows an explicit identifier match to rescue a slightly weaker
     # dense result.
     identifier_override_score: float = 0.75
 
     # Optional raw cross-encoder threshold.
-    #
-    # IMPORTANT:
-    # This is intentionally optional. A negative raw score does NOT
-    # automatically mean that legal evidence is insufficient.
-    minimum_rerank_score: float | None = None
+    minimum_rerank_score: float | None = 4.0
 
     # Minimum lexical overlap for generic questions where no explicit
     # article identifier exists.

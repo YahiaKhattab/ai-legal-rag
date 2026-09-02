@@ -11,7 +11,7 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from legal_rag.query.answer_language import answer_matches_language
-from legal_rag.query.answer_validator import validate_numeric_claims
+from legal_rag.query.answer_validator import extract_numbers, validate_numeric_claims
 from legal_rag.query.evidence_sufficiency import (
     EvidenceAssessment,
     EvidenceSufficiencyEvaluator,
@@ -173,7 +173,7 @@ class RAGAnswerPipeline:
         # If the question contains an explicit article number, prefer
         # chunks belonging to that exact article.
         # ---------------------------------------------------------------
-
+       
         evidence = _select_evidence(
             query=query,
             retrieved=retrieved,
@@ -304,6 +304,8 @@ class RAGAnswerPipeline:
             chunk.text
             for chunk in selected_chunks
         )
+
+      
 
         is_valid, unsupported_numbers, _ = (
             validate_numeric_claims(
