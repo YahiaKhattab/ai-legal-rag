@@ -8,18 +8,16 @@ no internet access).
 Usage:
 
     # 1) Pull a snapshot from Qdrant Cloud and save it to disk
-    python qdrant_snapshot.py export \
-        --url https://xxxxx.cloud.qdrant.io:6333 \
-        --api-key YOUR_CLOUD_API_KEY \
-        --collection legal_chunks \
-        --output ./legal_chunks.snapshot
+    # Only from the qdrant website 
+    # https://a0fa18be-1572-4844-8f50-e33620bfe7ff.eu-central-1-0.aws.cloud.qdrant.io:6333/dashboard#/collections/legal_chunks#snapshots
 
+    
     # 2) Restore that snapshot into a local Qdrant (e.g. the project's
     #    docker-compose Qdrant running on http://localhost:6333)
     python qdrant_snapshot.py restore \
         --url http://localhost:6333 \
         --collection legal_chunks \
-        --input ./legal_chunks.snapshot
+        --input ./legal_chunks.snapshot [Put snapshot path here]
 """
 
 from __future__ import annotations
