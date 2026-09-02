@@ -51,9 +51,9 @@ def _build_pipeline(
     sufficiency_evaluator = EvidenceSufficiencyEvaluator(
         EvidenceSufficiencyConfig(
             enabled=settings.evidence_sufficiency_enabled,
-            minimum_dense_score=settings.experimental_min_dense_score,
-            identifier_override_score=settings.experimental_identifier_override_score,
-            minimum_rerank_score=None,
+            minimum_dense_score=0.855,
+            identifier_override_score=0.75,
+            minimum_rerank_score=4.0,
         )
     )
 
@@ -160,7 +160,7 @@ def main() -> None:
     print("-" * 70)
     print(result.answer_text.strip())
 
-        # ============================================================
+    # ============================================================
     # EVIDENCE STATUS
     # ============================================================
 
@@ -172,13 +172,39 @@ def main() -> None:
 
         if retrieval.sufficient:
             print("✓ Evidence found")
-            print(
-                f"✓ {retrieval.used_chunk_count} legal "
-                f"source{'s' if retrieval.used_chunk_count != 1 else ''} used"
-            )
         else:
             print("✗ Insufficient legal evidence")
-            
+
+        print(f"Candidates       : {retrieval.candidate_count}")
+        print(f"Evidence Chunks  : {retrieval.used_chunk_count}")
+
+        if retrieval.top_dense_score is not None:
+            print(
+                f"Dense Score      : "
+                f"{retrieval.top_dense_score:.4f}"
+            )
+        else:
+            print("Dense Score      : N/A")
+
+        if retrieval.dense_score_margin is not None:
+            print(
+                f"Dense Margin     : "
+                f"{retrieval.dense_score_margin:.4f}"
+            )
+        else:
+            print("Dense Margin     : N/A")
+
+        if retrieval.top_rerank_score is not None:
+            print(
+                f"Rerank Score     : "
+                f"{retrieval.top_rerank_score:.4f}"
+            )
+        else:
+            print("Rerank Score     : N/A")
+
+        print(f"Source Count     : {retrieval.source_count}")
+        print(f"Decision Reason  : {retrieval.reason}")
+
     # ============================================================
     # SELECTED LEGAL EVIDENCE
     # ============================================================
@@ -201,12 +227,6 @@ def main() -> None:
             if excerpt.page is not None:
                 print(f"Page    : {excerpt.page}")
 
-            if excerpt.section_title:
-                print(
-                    f"Section : "
-                    f"{excerpt.section_title}"
-                )
-
             print("\nEvidence:")
             print(excerpt.text.strip())
 
@@ -220,11 +240,6 @@ def main() -> None:
 
         for citation in result.citations:
             locator_parts = []
-
-            if citation.section_title:
-                locator_parts.append(
-                    citation.section_title
-                )
 
             if citation.page is not None:
                 locator_parts.append(
