@@ -1,0 +1,23 @@
+# Dependencies needed to RUN this unit test suite.
+#
+# Notes:
+# - This intentionally does NOT include the heavy ML dependencies used by
+#   the real project at runtime (sentence-transformers/torch, paddleocr/
+#   paddlepaddle, qdrant-client's server). Every test that would need
+#   those replaces them with a lightweight fake or a unittest.mock patch,
+#   so they never need to be installed or downloaded to run this suite.
+# - qdrant-client and pymupdf ARE installed for real (they are lightweight
+#   and some tests build real tiny PDFs / exercise real Qdrant model
+#   classes like PointStruct).
+
+pytest==9.1.1
+pytest-cov==7.1.0
+pydantic==2.*
+pydantic-settings==2.*
+httpx>=0.27
+numpy>=1.26
+pypdf>=4.0
+python-docx>=1.1
+tokenizers>=0.22
+qdrant-client==1.19.0
+pymupdf>=1.24

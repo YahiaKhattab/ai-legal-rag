@@ -9,7 +9,7 @@ class OllamaGenerationClient:
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
-        model: str = "qwen2.5:3b",
+        model: str = "qwen3:4b",
         timeout_seconds: float = 200.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
@@ -30,6 +30,7 @@ class OllamaGenerationClient:
             "model": self._model,
             "prompt": prompt,
             "stream": False,
+            "think": False,
             "options": {"temperature": temperature},
         }
 
@@ -60,8 +61,6 @@ class OllamaGenerationClient:
         generated = response.json().get("response")
 
         if not isinstance(generated, str):
-            raise ValueError(
-                "Ollama response did not contain generated text"
-            )
+            raise ValueError("Ollama response did not contain generated text")
 
         return generated.strip()

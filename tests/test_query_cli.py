@@ -1,3 +1,4 @@
+from dataclasses import replace
 from typing import cast
 
 import pytest
@@ -37,6 +38,25 @@ class FakePipeline:
                 top_rerank_score=-1.0,
                 exact_identifier_match=False,
                 source_count=1,
+            ),
+        )
+
+
+class GenerationFailurePipeline(FakePipeline):
+    def answer(
+        self,
+        query: str,
+        language: str = "mixed",
+        filters: RetrievalFilters | None = None,
+    ) -> CitedAnswer:
+        result = super().answer(query, language, filters)
+        assert result.retrieval is not None
+        return replace(
+            result,
+            answer_text="تعذر إنتاج إجابة قابلة للتحقق.",
+            retrieval=replace(
+                result.retrieval,
+                reason="invalid_structured_generation",
             ),
         )
 
@@ -81,3 +101,36 @@ def test_query_cli_prints_fail_closed_retrieval_diagnostics(
     assert "Decision: insufficient" in output
     assert "Top dense score: 0.7800" in output
     assert "المعلومات غير كافية" in output
+
+
+def test_query_cli_distinguishes_generation_validation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake_pipeline = GenerationFailurePipeline()
+
+    def fake_build_pipeline(
+        settings: Settings,
+        *,
+        retrieve_top_k: int,
+        rerank_top_n: int,
+    ) -> RAGAnswerPipeline:
+        del settings, retrieve_top_k, rerank_top_n
+        return cast(RAGAnswerPipeline, fake_pipeline)
+
+    monkeypatch.setattr(
+        cli_module,
+        "_build_pipeline",
+        fake_build_pipeline,
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["legal-rag-query", "سؤال", "--language", "ar", "--source", "official"],
+    )
+
+    cli_module.main()
+
+    output = capsys.readouterr().out
+    assert "Decision: generation_failure" in output
+    assert "answer validation failed" in output
+    assert "Insufficient legal evidence" not in output

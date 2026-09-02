@@ -15,6 +15,12 @@ from legal_rag.query.reranker import CrossEncoderReranker
 from legal_rag.query.retriever import LegalRetriever, RetrievalFilters
 from legal_rag.vector_store.qdrant import QdrantVectorStore
 
+_GENERATION_FAILURE_REASONS = {
+    "invalid_structured_generation",
+    "model_returned_no_valid_evidence",
+    "numeric_validation_failure",
+}
+
 
 def _build_pipeline(
     settings: Settings,
@@ -26,6 +32,7 @@ def _build_pipeline(
 
     store = QdrantVectorStore(
         url=settings.qdrant_url,
+        api_key=settings.qdrant_api_key,
         collection_name=settings.qdrant_collection,
     )
 
@@ -73,9 +80,7 @@ def _build_pipeline(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Query the AI Legal RAG system."
-    )
+    parser = argparse.ArgumentParser(description="Query the AI Legal RAG system.")
 
     parser.add_argument(
         "query",
@@ -170,6 +175,8 @@ def main() -> None:
         print("\nEVIDENCE STATUS")
         print("-" * 70)
 
+        generation_failed = retrieval.reason in _GENERATION_FAILURE_REASONS
+
         if retrieval.sufficient:
             print("✓ Evidence found")
         else:
@@ -183,6 +190,8 @@ def main() -> None:
                 f"Dense Score      : "
                 f"{retrieval.top_dense_score:.4f}"
             )
+        elif generation_failed:
+            print("✗ Evidence was retrieved, but answer validation failed")
         else:
             print("Dense Score      : N/A")
 
@@ -219,10 +228,7 @@ def main() -> None:
         ):
             print(f"\n[{index}] {excerpt.marker}")
 
-            print(
-                f"Source  : "
-                f"{excerpt.source_file or excerpt.chunk_id}"
-            )
+            print(f"Source  : {excerpt.source_file or excerpt.chunk_id}")
 
             if excerpt.page is not None:
                 print(f"Page    : {excerpt.page}")
@@ -242,9 +248,7 @@ def main() -> None:
             locator_parts = []
 
             if citation.page is not None:
-                locator_parts.append(
-                    f"Page {citation.page}"
-                )
+                locator_parts.append(f"Page {citation.page}")
 
             locator = " — ".join(locator_parts)
 

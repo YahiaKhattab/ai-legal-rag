@@ -13,7 +13,7 @@ services:
       LEGAL_RAG_QDRANT_URL: http://qdrant:6333
       LEGAL_RAG_OLLAMA_URL: http://ollama:11434
       LEGAL_RAG_QDRANT_COLLECTION: legal_chunks
-      LEGAL_RAG_GENERATION_MODEL: qwen2.5:3b
+      LEGAL_RAG_GENERATION_MODEL: qwen3:4b
       LEGAL_RAG_EMBEDDING_DEVICE: cpu
       LEGAL_RAG_RERANK_DEVICE: cpu
     depends_on:
@@ -55,7 +55,7 @@ services:
     #           count: all
     #           capabilities: [gpu]
 
-  # One-shot helper: pulls the qwen2.5:3b model into the ollama_data volume
+  # One-shot helper: pulls the qwen3:4b model into the ollama_data volume
   # on first startup. Runs once and exits; ollama itself keeps running.
   ollama-pull:
     image: ollama/ollama:latest
@@ -70,7 +70,7 @@ services:
     command: >
       "until ollama list >/dev/null 2>&1;
        do echo waiting for ollama...; sleep 2; done;
-       ollama pull qwen2.5:3b"
+       ollama pull qwen3:4b"
     restart: "no"
 
 volumes:
