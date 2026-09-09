@@ -1,4 +1,7 @@
+from dataclasses import replace
+
 import numpy as np
+import pytest
 from qdrant_client import QdrantClient
 
 from legal_rag.embeddings.models import EmbeddingConfig
@@ -23,8 +26,9 @@ def test_qdrant_collection_creation() -> None:
     assert store.collection_name in names
 
 
-def test_build_point_preserves_chunk_metadata() -> None:
-    store = QdrantVectorStore(client=QdrantClient(":memory:"))
+@pytest.mark.parametrize("compact", [False, True])
+def test_build_point_preserves_chunk_metadata(compact: bool) -> None:
+    store = QdrantVectorStore(client=QdrantClient(":memory:"), omit_normalized_text=compact)
 
     chunk = ChunkRecord(
         chunk_id="chunk-123",
@@ -54,6 +58,7 @@ def test_build_point_preserves_chunk_metadata() -> None:
         pipeline_version="1.2.0",
     )
 
+    original_record = chunk.to_dict()
     embedding = np.zeros(768, dtype=np.float32)
 
     point = store.build_point(
@@ -72,11 +77,21 @@ def test_build_point_preserves_chunk_metadata() -> None:
     assert point.payload["source_file"] == "law.pdf"
     assert point.payload["page_start"] == 1
     assert point.payload["section_title"] == "المادة الأولى"
+    expected = dict(original_record)
+    if compact:
+        expected.pop("normalized_text")
+    assert point.payload == expected
+    assert chunk.to_dict() == original_record
+    fallback = store.build_point(chunk=replace(chunk, original_text=""), embedding=embedding)
+    assert fallback.payload is not None
+    assert fallback.payload["normalized_text"] == chunk.normalized_text
 
 
-def test_upsert_points() -> None:
+@pytest.mark.parametrize("compact", [False, True])
+def test_upsert_points(compact: bool) -> None:
     store = QdrantVectorStore(
         collection_name="test_legal_chunks",
+        omit_normalized_text=compact,
         client=QdrantClient(":memory:"),
     )
 
@@ -132,3 +147,8 @@ def test_upsert_points() -> None:
     assert result[0].payload["chunk_id"] == "chunk-upsert-123"
     assert result[0].payload["document_id"] == "document-123"
     assert result[0].payload["source_file"] == "law.pdf"
+
+    assert result[0].payload["original_text"] == chunk.original_text
+    assert ("normalized_text" in result[0].payload) is (not compact)
+    store.upsert_points([point])
+    assert store.client.count(collection_name=store.collection_name, exact=True).count == 1
