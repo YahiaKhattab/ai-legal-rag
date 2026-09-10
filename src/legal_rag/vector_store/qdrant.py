@@ -22,12 +22,14 @@ class QdrantVectorStore:
         api_key: str | None = None,
         collection_name: str = "legal_chunks",
         vector_size: int = 768,
-        timeout: float = 60.0,
+        omit_normalized_text: bool = False,
+        timeout: int = 60,
         client: QdrantClient | None = None,
     ) -> None:
         self._client = client or QdrantClient(url=url, api_key=api_key, timeout=timeout)
         self._collection_name = collection_name
         self._vector_size = vector_size
+        self._omit_normalized_text = omit_normalized_text
 
     @property
     def client(self) -> QdrantClient:
@@ -108,10 +110,16 @@ class QdrantVectorStore:
                 f"embedding dimension must be {self._vector_size}, got {embedding.shape[0]}"
             )
 
+        payload = chunk.to_dict()
+        # Keep complete ingestion records; compact only the stored point payload.
+        # Preserve normalized text when original text cannot serve retrieval.
+        if self._omit_normalized_text and chunk.original_text.strip():
+            payload.pop("normalized_text", None)
+
         return PointStruct(
             id=self._point_id(chunk.chunk_id),
             vector=embedding.astype(np.float32).tolist(),
-            payload=chunk.to_dict(),
+            payload=payload,
         )
 
     def upsert_points(self, points: Sequence[PointStruct], batch_size: int = 64) -> None:

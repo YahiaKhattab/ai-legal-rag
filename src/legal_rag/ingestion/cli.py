@@ -128,6 +128,7 @@ def _build_indexer(settings: Settings) -> QdrantIndexer:
         url=settings.qdrant_url,
         api_key=settings.qdrant_api_key,
         collection_name=settings.qdrant_collection,
+        omit_normalized_text=settings.qdrant_omit_normalized_text,
     )
     embedder = BatchEmbedder(
         EmbeddingEncoder(
