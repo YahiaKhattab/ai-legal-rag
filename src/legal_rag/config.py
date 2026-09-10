@@ -17,8 +17,12 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str | None = None
     qdrant_collection: str = "legal_chunks"
+
     ollama_url: str = "http://localhost:11434"
+
     generation_model: str = "qwen3:4b"
+    contextualization_model: str = "qwen2.5:3b"
+
     health_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
 
     embedding_model: str = "intfloat/multilingual-e5-base"
@@ -31,6 +35,11 @@ class Settings(BaseSettings):
     evidence_top_n: int = Field(default=2, ge=1, le=20)
 
     generation_timeout_seconds: float = Field(default=200.0, gt=0, le=600)
+    contextualization_timeout_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        le=300,
+    )
     generation_temperature: float = Field(default=0.1, ge=0, le=2)
     generation_retry_count: int = Field(default=1, ge=0, le=3)
     maximum_context_characters: int = Field(default=12_000, ge=1_000, le=100_000)
@@ -56,11 +65,17 @@ class Settings(BaseSettings):
     def validate_pipeline_limits(self) -> "Settings":
         if self.rerank_top_n > self.retrieval_top_k:
             raise ValueError("rerank_top_n must not exceed retrieval_top_k")
+
         if self.evidence_top_n > self.rerank_top_n:
             raise ValueError("evidence_top_n must not exceed rerank_top_n")
-        if self.experimental_identifier_override_score > self.experimental_min_dense_score:
+
+        if (
+            self.experimental_identifier_override_score
+            > self.experimental_min_dense_score
+        ):
             raise ValueError(
                 "experimental_identifier_override_score must not exceed "
                 "experimental_min_dense_score"
             )
+
         return self

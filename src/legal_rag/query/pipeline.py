@@ -10,8 +10,11 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from legal_rag.query.answer_language import answer_matches_language
-from legal_rag.query.answer_validator import extract_numbers, validate_numeric_claims
+from legal_rag.query.answer_language import (
+    answer_matches_language,
+    detect_question_language,
+)
+from legal_rag.query.answer_validator import validate_numeric_claims
 from legal_rag.query.evidence_sufficiency import (
     EvidenceAssessment,
     EvidenceSufficiencyEvaluator,
@@ -118,6 +121,18 @@ class RAGAnswerPipeline:
     ) -> CitedAnswer:
 
         # ---------------------------------------------------------------
+        # 0. Resolve answer language
+        #
+        # When the caller uses "mixed", detect the dominant language
+        # of the user's question deterministically.
+        # ---------------------------------------------------------------
+
+        effective_language = detect_question_language(query)
+
+        if language != "mixed":
+            effective_language = language
+
+        # ---------------------------------------------------------------
         # 1. Dense retrieval
         # ---------------------------------------------------------------
 
@@ -159,7 +174,7 @@ class RAGAnswerPipeline:
         if not assessment.sufficient:
             return self._insufficient_answer(
                 query=query,
-                language=language,
+                language=effective_language,
                 retrieved=retrieved,
                 assessment=assessment,
             )
@@ -168,12 +183,12 @@ class RAGAnswerPipeline:
         # 5. Select evidence
         #
         # IMPORTANT:
-        # Evidence selection is now query-aware.
+        # Evidence selection is query-aware.
         #
         # If the question contains an explicit article number, prefer
         # chunks belonging to that exact article.
         # ---------------------------------------------------------------
-       
+
         evidence = _select_evidence(
             query=query,
             retrieved=retrieved,
@@ -185,7 +200,7 @@ class RAGAnswerPipeline:
         if not evidence:
             return self._insufficient_answer(
                 query=query,
-                language=language,
+                language=effective_language,
                 retrieved=retrieved,
                 assessment=replace(
                     assessment,
@@ -201,7 +216,7 @@ class RAGAnswerPipeline:
         prompt = build_grounded_messages(
             query,
             evidence,
-            language=language,
+            language=effective_language,
             maximum_context_characters=self._maximum_context_characters,
         )
 
@@ -211,13 +226,33 @@ class RAGAnswerPipeline:
 
         generated = self._generate_structured(
             prompt,
-            language=language,
+            language=effective_language,
         )
+
+        # ---------------------------------------------------------------
+        # DEBUG:
+        # Inspect the exact answer returned by the model BEFORE
+        # citation attachment, numeric validation, and API response.
+        # ---------------------------------------------------------------
+
+        print("\n========== GENERATED ANSWER ==========")
+
+        if generated is None:
+            print("Generated: None")
+        else:
+            print("Answer:", generated.answer)
+            print("Evidence IDs:", generated.evidence_ids)
+            print(
+                "Insufficient:",
+                generated.insufficient_evidence,
+            )
+
+        print("======================================\n")
 
         if generated is None:
             return self._generation_failure_answer(
                 query=query,
-                language=language,
+                language=effective_language,
                 retrieved=retrieved,
                 assessment=assessment,
                 used_chunk_count=len(evidence),
@@ -231,7 +266,7 @@ class RAGAnswerPipeline:
         if generated.insufficient_evidence:
             return self._insufficient_answer(
                 query=query,
-                language=language,
+                language=effective_language,
                 retrieved=retrieved,
                 assessment=assessment,
                 reason="model_reported_insufficient_evidence",
@@ -265,7 +300,7 @@ class RAGAnswerPipeline:
         if not selected_pairs:
             return self._generation_failure_answer(
                 query=query,
-                language=language,
+                language=effective_language,
                 retrieved=retrieved,
                 assessment=replace(
                     assessment,
@@ -305,8 +340,6 @@ class RAGAnswerPipeline:
             for chunk in selected_chunks
         )
 
-      
-
         is_valid, unsupported_numbers, _ = (
             validate_numeric_claims(
                 query,
@@ -317,7 +350,7 @@ class RAGAnswerPipeline:
 
         if not is_valid:
             answer_text = _validation_failure_message(
-                language,
+                effective_language,
                 unsupported_numbers,
             )
 
@@ -359,7 +392,7 @@ class RAGAnswerPipeline:
         return CitedAnswer(
             query=query,
             answer_text=answer_text,
-            language=language,
+            language=effective_language,
             citations=citations,
             retrieved_chunk_ids=[
                 chunk.chunk_id
@@ -436,7 +469,7 @@ class RAGAnswerPipeline:
             ):
                 continue
 
-            # Enforce requested answer language.
+            # Enforce requested/detected answer language.
             if not answer_matches_language(
                 generated.answer,
                 language,

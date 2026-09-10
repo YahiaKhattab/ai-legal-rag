@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
+from legal_rag.chat_context.contextualizer import QueryContextualizer
+from legal_rag.chat_context.memory import ChatMemoryStore
 from legal_rag.config import Settings
 from legal_rag.embeddings.batch import BatchEmbedder
 from legal_rag.embeddings.encoder import EmbeddingEncoder
@@ -14,6 +17,7 @@ from legal_rag.ingestion.pipeline import IngestionPipeline
 from legal_rag.ingestion.validation import DEFAULT_MAXIMUM_DOCUMENT_BYTES
 from legal_rag.query.cli import _build_pipeline
 from legal_rag.query.models import CitedAnswer
+from legal_rag.query.ollama_client import OllamaGenerationClient
 from legal_rag.query.retriever import RetrievalFilters
 from legal_rag.vector_store.indexer import QdrantIndexer
 from legal_rag.vector_store.qdrant import QdrantVectorStore
@@ -43,10 +47,63 @@ router = APIRouter(
     response_model=AskResponse,
 )
 async def ask(request: AskRequest) -> AskResponse:
-    """Answer a legal question using the configured RAG pipeline."""
+    """Answer a legal question using chat context and the legal RAG pipeline."""
 
     try:
         settings = Settings()
+
+        # ==============================================================
+        # CHAT SESSION
+        # ==============================================================
+
+        # Generate a new internal session ID when this is a new
+        # conversation. The user does not need to provide one manually.
+        session_id = request.session_id or uuid4()
+
+        chat_memory = ChatMemoryStore(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key,
+        )
+
+        chat_memory.ensure_collection()
+
+        # Retrieve recent conversation history for this session.
+        # Chat history is context only and is NEVER treated as legal
+        # evidence.
+        history = chat_memory.get_recent_messages(
+            session_id=session_id,
+            limit=10,
+        )
+
+        # ==============================================================
+        # QUERY CONTEXTUALIZATION
+        # ==============================================================
+
+        # Use the dedicated non-thinking model for contextualization.
+        # qwen3:4b remains responsible for the final legal answer.
+        contextualization_client = OllamaGenerationClient(
+            base_url=settings.ollama_url,
+            model=settings.contextualization_model,
+            timeout_seconds=settings.contextualization_timeout_seconds,
+        )
+
+        contextualizer = QueryContextualizer(
+            client=contextualization_client,
+        )
+
+        # For a new conversation, this returns the original query
+        # unchanged. For a follow-up question, it rewrites the query
+        # into a standalone legal retrieval query.
+        contextualized_query = contextualizer.contextualize(
+            query=request.query,
+            history=history,
+        )
+        print(f"[Chat Context] Original: {request.query}")
+        print(f"[Chat Context] Contextualized: {contextualized_query}")
+
+        # ==============================================================
+        # CURRENT RAG PIPELINE
+        # ==============================================================
 
         pipeline = _build_pipeline(
             settings,
@@ -54,10 +111,32 @@ async def ask(request: AskRequest) -> AskResponse:
             rerank_top_n=settings.rerank_top_n,
         )
 
+        # IMPORTANT:
+        # Only the contextualized query enters legal retrieval.
+        # Chat history itself is never sent to the legal retriever.
         result: CitedAnswer = pipeline.answer(
-            request.query,
+            contextualized_query,
             language="mixed",
             filters=RetrievalFilters(),
+        )
+
+        # ==============================================================
+        # SAVE CONVERSATION
+        # ==============================================================
+
+        # Save the ORIGINAL user question so the conversation remains
+        # faithful to what the user actually asked.
+        chat_memory.save_message(
+            session_id=session_id,
+            role="user",
+            content=request.query,
+        )
+
+        # Save the final assistant answer.
+        chat_memory.save_message(
+            session_id=session_id,
+            role="assistant",
+            content=result.answer_text.strip(),
         )
 
         # ==============================================================
@@ -107,6 +186,7 @@ async def ask(request: AskRequest) -> AskResponse:
         # ==============================================================
 
         return AskResponse(
+            session_id=session_id,
             question=request.query,
             answer=result.answer_text.strip(),
             selected_legal_evidence=selected_legal_evidence,
