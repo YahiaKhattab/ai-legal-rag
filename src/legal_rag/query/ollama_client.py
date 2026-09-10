@@ -23,25 +23,47 @@ class OllamaGenerationClient:
         *,
         system: str | None = None,
         format_schema: Mapping[str, object] | None = None,
+        max_tokens: int | None = None,
     ) -> str:
-        """Generate a non-streaming response with optional structured output."""
+        """Generate a non-streaming response using Ollama's chat API."""
+
+        messages: list[dict[str, str]] = []
+
+        if system is not None:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": system,
+                }
+            )
+
+        messages.append(
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        )
+
+        options: dict[str, object] = {
+            "temperature": temperature,
+        }
+
+        if max_tokens is not None:
+            options["num_predict"] = max_tokens
 
         payload: dict[str, object] = {
             "model": self._model,
-            "prompt": prompt,
+            "messages": messages,
             "stream": False,
             "think": False,
-            "options": {"temperature": temperature},
+            "options": options,
         }
-
-        if system is not None:
-            payload["system"] = system
 
         if format_schema is not None:
             payload["format"] = dict(format_schema)
 
         response = httpx.post(
-            f"{self._base_url}/api/generate",
+            f"{self._base_url}/api/chat",
             json=payload,
             timeout=self._timeout,
         )
@@ -53,14 +75,38 @@ class OllamaGenerationClient:
             print(f"Prompt characters: {len(prompt)}")
             print(f"System characters: {len(system or '')}")
             print(f"Format schema: {format_schema is not None}")
+            print(f"Max tokens: {max_tokens}")
             print(f"Response: {response.text}")
             print("==================================\n")
 
         response.raise_for_status()
 
-        generated = response.json().get("response")
+        data = response.json()
+
+        message = data.get("message")
+
+        if not isinstance(message, dict):
+            raise ValueError("Ollama response did not contain a message")
+
+        generated = message.get("content")
 
         if not isinstance(generated, str):
-            raise ValueError("Ollama response did not contain generated text")
+            raise ValueError(
+                "Ollama response message did not contain generated content"
+            )
 
-        return generated.strip()
+        return self._clean_thinking(generated)
+
+    @staticmethod
+    def _clean_thinking(text: str) -> str:
+        """Remove any residual Qwen thinking content from generated text."""
+
+        text = text.strip()
+
+        if "</think>" in text:
+            text = text.split("</think>", 1)[1]
+
+        if "<think>" in text:
+            text = text.split("<think>", 1)[0]
+
+        return text.strip()

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 from pydantic import BaseModel, Field
 
 
@@ -10,6 +12,11 @@ class AskRequest(BaseModel):
         ...,
         min_length=1,
         description="Natural-language legal question.",
+    )
+
+    session_id: UUID | None = Field(
+        default=None,
+        description="Internal conversation session identifier.",
     )
 
 
@@ -34,6 +41,8 @@ class CitationResponse(BaseModel):
 
 class AskResponse(BaseModel):
     """User-facing response for legal question answering."""
+
+    session_id: UUID
 
     question: str
     answer: str
