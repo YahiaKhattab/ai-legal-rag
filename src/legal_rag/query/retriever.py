@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from qdrant_client import models as qmodels
 
+from legal_rag.observability.tracing import attributes, traced
 from legal_rag.query.chunk_text_store import ChunkTextStore
 from legal_rag.query.models import RetrievedChunk
 from legal_rag.query.query_embedder import QueryEmbedder, get_default_query_embedder
@@ -43,6 +44,7 @@ class LegalRetriever:
         # chunk text directly -- see chunk_text_store.py for why this exists.
         self._text_store = text_store
 
+    @traced("retrieval.dense", "RETRIEVER")
     def search(
         self,
         query: str,
@@ -95,6 +97,7 @@ class LegalRetriever:
                     payload=payload,
                 )
             )
+        attributes(**{"rag.dense_scores": [chunk.score for chunk in chunks]})
         return chunks
 
 

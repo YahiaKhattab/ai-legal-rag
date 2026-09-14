@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 from qdrant_client import QdrantClient, models
 
 from legal_rag.chat_context.models import ChatMessage
+from legal_rag.observability.tracing import traced
 
 
 class ChatMemoryStore:
@@ -24,6 +25,7 @@ class ChatMemoryStore:
             api_key=api_key,
         )
 
+    @traced("chat.memory.ensure")
     def ensure_collection(self) -> None:
         """Create the chat memory collection if it does not exist."""
         collections = self._client.get_collections().collections
@@ -52,6 +54,7 @@ class ChatMemoryStore:
             field_schema=models.PayloadSchemaType.DATETIME,
         )
 
+    @traced("chat.memory.write")
     def save_message(
         self,
         session_id: UUID,
@@ -87,6 +90,7 @@ class ChatMemoryStore:
 
         return message
 
+    @traced("chat.memory.read")
     def get_recent_messages(
         self,
         session_id: UUID,
