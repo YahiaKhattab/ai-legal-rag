@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, replace
 
+from legal_rag.observability.tracing import traced
 from legal_rag.query.models import Citation, RerankedChunk
 from legal_rag.query.prompts.grounded_answer_v1 import PROMPT_VERSION, system_prompt
 
@@ -20,6 +21,7 @@ class GroundedPrompt:
     prompt_version: str
 
 
+@traced("prompt.build")
 def build_grounded_messages(
     query: str,
     chunks: list[RerankedChunk],

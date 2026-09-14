@@ -51,7 +51,11 @@ RUN chown -R appuser:appuser /app
 USER appuser
 
 # Install the package with the OCR extra (paddleocr + paddlepaddle).
-RUN pip install --no-cache-dir --user ".[ocr]"
+RUN pip install \
+    --no-cache-dir \
+    --default-timeout=300 \
+    --retries=10 \
+    --user ".[ocr,phoenix]"
 
 # Pre-download models at build time so the container starts instantly and
 # does not depend on internet access at runtime for embedding/reranking.
@@ -64,10 +68,12 @@ CrossEncoder('cross-encoder/mmarco-mMiniLMv2-L12-H384-v1')"
 
 # Pre-download the Arabic + English OCR models (see the note at the top of
 # this file about PaddleOCR's network-on-first-call behavior).
-RUN python -c "\
-from legal_rag.ingestion.ocr import PaddleOcrEngine; \
-PaddleOcrEngine(language='ar'); \
-PaddleOcrEngine(language='en')"
+# RUN python -c "\
+# from legal_rag.ingestion.ocr import PaddleOcrEngine; \
+# PaddleOcrEngine(language='ar'); \
+# PaddleOcrEngine(language='en')"
+# OCR validation skipped in lightweight API image build.
+# PaddleOCR is installed only when building with the OCR extra.
 
 EXPOSE 8000
 

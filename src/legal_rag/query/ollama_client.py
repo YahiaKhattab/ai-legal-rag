@@ -4,6 +4,8 @@ from collections.abc import Mapping
 
 import httpx
 
+from legal_rag.observability.tracing import attributes, traced
+
 
 class OllamaGenerationClient:
     def __init__(
@@ -16,6 +18,7 @@ class OllamaGenerationClient:
         self._model = model
         self._timeout = timeout_seconds
 
+    @traced("generation.attempt", "LLM")
     def generate(
         self,
         prompt: str,
@@ -27,6 +30,11 @@ class OllamaGenerationClient:
     ) -> str:
         """Generate a non-streaming response using Ollama's chat API."""
 
+        attributes(**{
+            "llm.model_name": self._model,
+            "rag.structured_output": format_schema is not None,
+            "rag.generation_purpose": "answer" if format_schema is not None else "contextualization",
+        })
         messages: list[dict[str, str]] = []
 
         if system is not None:
@@ -76,12 +84,15 @@ class OllamaGenerationClient:
             print(f"System characters: {len(system or '')}")
             print(f"Format schema: {format_schema is not None}")
             print(f"Max tokens: {max_tokens}")
-            print(f"Response: {response.text}")
             print("==================================\n")
 
         response.raise_for_status()
 
         data = response.json()
+        attributes(**{
+            "llm.token_count.prompt": data.get("prompt_eval_count"),
+            "llm.token_count.completion": data.get("eval_count"),
+        })
 
         message = data.get("message")
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 
 from legal_rag.config import Settings
+from legal_rag.observability.tracing import attributes, traced, tracing_process
 from legal_rag.query.evidence_sufficiency import (
     EvidenceSufficiencyConfig,
     EvidenceSufficiencyEvaluator,
@@ -22,6 +23,7 @@ _GENERATION_FAILURE_REASONS = {
 }
 
 
+@traced("pipeline.initialize")
 def _build_pipeline(
     settings: Settings,
     *,
@@ -30,6 +32,14 @@ def _build_pipeline(
 ) -> RAGAnswerPipeline:
     """Build the configured production pipeline behind a testable boundary."""
 
+    attributes(**{
+        "rag.retrieve_top_k": retrieve_top_k,
+        "rag.rerank_top_n": rerank_top_n,
+        "rag.evidence_top_n": settings.evidence_top_n,
+        "rag.context_limit": settings.maximum_context_characters,
+        "rag.embedding_model": settings.embedding_model,
+        "rag.rerank_model": settings.rerank_model,
+    })
     store = QdrantVectorStore(
         url=settings.qdrant_url,
         api_key=settings.qdrant_api_key,
@@ -58,9 +68,9 @@ def _build_pipeline(
     sufficiency_evaluator = EvidenceSufficiencyEvaluator(
         EvidenceSufficiencyConfig(
             enabled=settings.evidence_sufficiency_enabled,
-            minimum_dense_score=0.855,
-            identifier_override_score=0.75,
-            minimum_rerank_score=4.0,
+            minimum_dense_score=settings.evidence_minimum_dense_score,
+            identifier_override_score=settings.evidence_identifier_override_score,
+            minimum_rerank_score=settings.evidence_minimum_rerank_score,
         )
     )
 
@@ -79,6 +89,7 @@ def _build_pipeline(
     )
 
 
+@tracing_process
 def main() -> None:
     parser = argparse.ArgumentParser(description="Query the AI Legal RAG system.")
 

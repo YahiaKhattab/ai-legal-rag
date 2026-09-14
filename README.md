@@ -328,3 +328,12 @@ Work on a focused branch, review `git diff`, run the relevant checks and push th
 branch before opening a pull request. A local commit alone does not appear on
 GitHub. Document behavior changes and record the tested code revision, corpus,
 model and configuration alongside evaluation results.
+
+
+## Optional Phoenix observability (development increment)
+
+Manual metadata-only tracing is available for the shared RAG pipeline and API chat
+flow. It is disabled by default. See the [updated plan](docs/observability/phoenix-plan.md)
+and [Windows setup and verification runbook](docs/observability/phoenix-runbook.md).
+Phoenix runs separately; no RAG API image rebuild is needed. Live deployment and
+the reviewed evaluation/experiment milestone still require validation.
