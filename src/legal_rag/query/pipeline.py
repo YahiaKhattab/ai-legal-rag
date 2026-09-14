@@ -1,4 +1,22 @@
-"""End-to-end, fail-closed grounded legal RAG answer pipeline."""
+"""End-to-end, fail-closed grounded legal RAG answer pipeline.
+
+Changes from the dense-only version: an optional keyword (BM25) retriever
+can be supplied. When present, its results are fused with dense retrieval
+(Reciprocal Rank Fusion) and the FUSED candidate pool is what gets
+reranked -- this is the actual point where keyword search
+gets a chance to surface a chunk dense search missed entirely, not just
+re-order what dense already found.
+
+Deliberately NOT changed: the evidence-sufficiency gate's dense-score
+checks (`top_dense_score`, `dense_score_margin`) are still computed from
+the *original* dense-only `retrieved` list, never from fused scores. RRF
+scores are rank-based and on a completely different scale from cosine
+similarity (a rank-1 RRF hit is typically ~0.016, nowhere near the 0.855
+dense threshold) -- feeding fused scores into that threshold would make
+the gate reject almost everything. Turning keyword search on/off must not
+change what "the dense score was strong enough" means for anything already
+relying on that gate.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +37,7 @@ from legal_rag.query.evidence_sufficiency import (
     EvidenceAssessment,
     EvidenceSufficiencyEvaluator,
 )
+from legal_rag.query.hybrid_fusion import DEFAULT_RRF_K, reciprocal_rank_fusion
 from legal_rag.query.models import (
     Citation,
     CitedAnswer,
@@ -70,6 +89,17 @@ class RetrievalClient(Protocol):
         ...
 
 
+class KeywordRetrievalClient(Protocol):
+    def search(
+        self,
+        query: str,
+        top_k: int = 20,
+        filters: RetrievalFilters | None = None,
+    ) -> list[RetrievedChunk]:
+        """Return keyword (BM25) retrieval candidates."""
+        ...
+
+
 class RerankingClient(Protocol):
     def rerank(
         self,
@@ -88,6 +118,7 @@ class RAGAnswerPipeline:
         reranker: RerankingClient | None = None,
         generator: GenerationClient | None = None,
         sufficiency_evaluator: EvidenceSufficiencyEvaluator | None = None,
+        keyword_retriever: KeywordRetrievalClient | None = None,
         retrieve_top_k: int = 20,
         rerank_top_n: int = 6,
         evidence_top_n: int = 4,
@@ -95,6 +126,8 @@ class RAGAnswerPipeline:
         generation_retry_count: int = 1,
         maximum_context_characters: int = 12_000,
         maximum_dense_score_drop: float = 0.02,
+        keyword_top_k: int = 20,
+        rrf_k: int = DEFAULT_RRF_K,
     ) -> None:
         self._retriever = retriever
         self._reranker = reranker or get_default_reranker()
@@ -103,6 +136,17 @@ class RAGAnswerPipeline:
         self._sufficiency_evaluator = (
             sufficiency_evaluator
             or EvidenceSufficiencyEvaluator()
+        )
+
+        # None means dense-only, unchanged from before this feature was
+        # added -- keyword search is strictly opt-in per pipeline instance.
+        self._keyword_retriever = keyword_retriever
+        self._keyword_top_k = keyword_top_k
+        self._rrf_k = rrf_k
+        self._retrieval_strategy_label = (
+            "dense_plus_keyword_plus_cross_encoder"
+            if keyword_retriever is not None
+            else "dense_plus_cross_encoder"
         )
 
         self._retrieve_top_k = retrieve_top_k
@@ -143,13 +187,28 @@ class RAGAnswerPipeline:
         )
 
         # ---------------------------------------------------------------
-        # 2. Diversify candidates
+        # 1b. Keyword retrieval + fusion (optional)
+        #
+        # `retrieved` above is untouched and stays dense-only -- it's what
+        # the evidence gate's dense-score checks are computed against in
+        # step 4, and what the eventual CitedAnswer.retrieved_chunk_ids
+        # reports. Fusion only widens `fused_candidates`, the pool that
+        # reaches diversification/reranking below. This is the deliberate
+        # boundary described in this module's docstring.
         # ---------------------------------------------------------------
 
-        candidates = _diversify_candidates(
-            retrieved,
-            max_per_document=4,
-        )
+        if self._keyword_retriever is not None:
+            keyword_hits = self._keyword_retriever.search(
+                query,
+                top_k=self._keyword_top_k,
+                filters=filters,
+            )
+            fused_candidates = reciprocal_rank_fusion(
+                [retrieved, keyword_hits],
+                k=self._rrf_k,
+            )
+        else:
+            fused_candidates = retrieved
 
         # ---------------------------------------------------------------
         # 3. Cross-encoder reranking
@@ -157,12 +216,15 @@ class RAGAnswerPipeline:
 
         reranked = self._reranker.rerank(
             query,
-            candidates,
+            fused_candidates,
             top_n=self._rerank_top_n,
         )
 
         # ---------------------------------------------------------------
         # 4. Evidence sufficiency gate
+        #
+        # NOTE: `retrieved` here is still the dense-only list from step 1,
+        # not `fused_candidates` -- see the module docstring for why.
         # ---------------------------------------------------------------
 
         assessment = self._sufficiency_evaluator.assess(
@@ -228,26 +290,6 @@ class RAGAnswerPipeline:
             prompt,
             language=effective_language,
         )
-
-        # ---------------------------------------------------------------
-        # DEBUG:
-        # Inspect the exact answer returned by the model BEFORE
-        # citation attachment, numeric validation, and API response.
-        # ---------------------------------------------------------------
-
-        print("\n========== GENERATED ANSWER ==========")
-
-        if generated is None:
-            print("Generated: None")
-        else:
-            print("Answer:", generated.answer)
-            print("Evidence IDs:", generated.evidence_ids)
-            print(
-                "Insufficient:",
-                generated.insufficient_evidence,
-            )
-
-        print("======================================\n")
 
         if generated is None:
             return self._generation_failure_answer(
@@ -403,6 +445,7 @@ class RAGAnswerPipeline:
                 assessment,
                 candidate_count=len(retrieved),
                 used_chunk_count=len(selected_chunks),
+                strategy=self._retrieval_strategy_label,
             ),
             prompt_version=prompt.prompt_version,
         )
@@ -521,6 +564,7 @@ class RAGAnswerPipeline:
                 final_assessment,
                 candidate_count=len(retrieved),
                 used_chunk_count=0,
+                strategy=self._retrieval_strategy_label,
             ),
             prompt_version=prompt_version,
         )
@@ -562,41 +606,11 @@ class RAGAnswerPipeline:
                 failed_assessment,
                 candidate_count=len(retrieved),
                 used_chunk_count=used_chunk_count,
+                strategy=self._retrieval_strategy_label,
             ),
             prompt_version=prompt_version,
         )
 
-
-# =========================================================================
-# Candidate diversification
-# =========================================================================
-
-
-def _diversify_candidates(
-    chunks: list[RetrievedChunk],
-    max_per_document: int = 4,
-) -> list[RetrievedChunk]:
-    """Keep at most ``max_per_document`` candidates from each document."""
-
-    selected: list[RetrievedChunk] = []
-
-    document_counts: dict[str, int] = defaultdict(int)
-
-    for chunk in chunks:
-
-        document_key = (
-            chunk.document_id
-            or chunk.source_file
-            or chunk.chunk_id
-        )
-
-        if document_counts[document_key] >= max_per_document:
-            continue
-
-        selected.append(chunk)
-        document_counts[document_key] += 1
-
-    return selected
 
 
 # =========================================================================
@@ -622,6 +636,13 @@ def _select_evidence(
 
     This prevents an unrelated article from entering the context merely
     because it has a high reranker score or shares generic legal words.
+
+    NOTE: `dense_scores` below is keyed from `retrieved` (dense-only), so a
+    chunk that reranking kept only because keyword search found it will
+    have no entry here (`dense_scores.get(...)` returns None) and is
+    therefore exempt from the dense-score-drop constraint, rather than
+    being compared against a dense score it never had. It still has to
+    earn its place through the article-match/reranker logic below.
     """
 
     if top_n <= 0 or not reranked:
@@ -796,10 +817,11 @@ def _diagnostics(
     *,
     candidate_count: int,
     used_chunk_count: int,
+    strategy: str,
 ) -> RetrievalDiagnostics:
 
     return RetrievalDiagnostics(
-        strategy="dense_plus_cross_encoder",
+        strategy=strategy,
         candidate_count=candidate_count,
         used_chunk_count=used_chunk_count,
         sufficient=assessment.sufficient,
