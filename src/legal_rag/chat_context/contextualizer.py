@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from legal_rag.chat_context.models import ChatMessage
+from legal_rag.observability.tracing import attributes, traced
 from legal_rag.query.ollama_client import OllamaGenerationClient
 
 
@@ -10,6 +11,7 @@ class QueryContextualizer:
     def __init__(self, client: OllamaGenerationClient) -> None:
         self._client = client
 
+    @traced("query.contextualize")
     def contextualize(
         self,
         query: str,
@@ -18,6 +20,11 @@ class QueryContextualizer:
         """Return a standalone version of the current query."""
 
         query = query.strip()
+        attributes(**{
+            "rag.history_count": len(history),
+            "rag.input_characters": len(query),
+            "rag.query_changed": False,
+        })
 
         if not query:
             raise ValueError("query must not be empty")
@@ -91,4 +98,8 @@ Return ONLY the rewritten question.
         if not rewritten:
             return query
 
+        attributes(**{
+            "rag.query_changed": rewritten != query,
+            "rag.output_characters": len(rewritten),
+        })
         return rewritten

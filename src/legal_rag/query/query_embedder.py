@@ -15,6 +15,8 @@ from functools import lru_cache
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
+from legal_rag.observability.tracing import traced
+
 _DEFAULT_MODEL_NAME = "intfloat/multilingual-e5-base"
 _QUERY_PREFIX = "query: "
 
@@ -28,6 +30,7 @@ class QueryEmbedder:
         self._model_name = model_name
         self._model = SentenceTransformer(model_name, device=device)
 
+    @traced("query.embed", "EMBEDDING")
     def encode_query(self, query: str) -> list[float]:
         if not query or not query.strip():
             raise ValueError("Query text must not be empty.")

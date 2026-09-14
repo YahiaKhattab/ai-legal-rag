@@ -15,20 +15,19 @@ from legal_rag.embeddings.models import EmbeddingConfig
 from legal_rag.ingestion.models import ChunkingConfig
 from legal_rag.ingestion.pipeline import IngestionPipeline
 from legal_rag.ingestion.validation import DEFAULT_MAXIMUM_DOCUMENT_BYTES
+from legal_rag.observability.tracing import correlate_session, traced_async
 from legal_rag.query.cli import _build_pipeline
 from legal_rag.query.models import CitedAnswer
 from legal_rag.query.ollama_client import OllamaGenerationClient
 from legal_rag.query.retriever import RetrievalFilters
 from legal_rag.vector_store.indexer import QdrantIndexer
 from legal_rag.vector_store.qdrant import QdrantVectorStore
-
 from legal_rag_api.schemas import (
     AskRequest,
     AskResponse,
     CitationResponse,
     LegalEvidence,
 )
-
 
 router = APIRouter(
     prefix="/legalAi",
@@ -46,6 +45,7 @@ router = APIRouter(
     summary="Answer a legal question",
     response_model=AskResponse,
 )
+@traced_async("api.ask")
 async def ask(request: AskRequest) -> AskResponse:
     """Answer a legal question using chat context and the legal RAG pipeline."""
 
@@ -59,6 +59,7 @@ async def ask(request: AskRequest) -> AskResponse:
         # Generate a new internal session ID when this is a new
         # conversation. The user does not need to provide one manually.
         session_id = request.session_id or uuid4()
+        correlate_session(session_id)
 
         chat_memory = ChatMemoryStore(
             url=settings.qdrant_url,
@@ -98,8 +99,6 @@ async def ask(request: AskRequest) -> AskResponse:
             query=request.query,
             history=history,
         )
-        print(f"[Chat Context] Original: {request.query}")
-        print(f"[Chat Context] Contextualized: {contextualized_query}")
 
         # ==============================================================
         # CURRENT RAG PIPELINE

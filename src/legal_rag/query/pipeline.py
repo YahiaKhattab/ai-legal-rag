@@ -28,6 +28,7 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
+from legal_rag.observability.tracing import attributes, span, traced
 from legal_rag.query.answer_language import (
     answer_matches_language,
     detect_question_language,
@@ -54,7 +55,6 @@ from legal_rag.query.prompt_builder import (
 from legal_rag.query.reranker import get_default_reranker
 from legal_rag.query.retriever import RetrievalFilters
 from legal_rag.query.structured_answer import GeneratedAnswer
-
 
 _MODEL_CITATION_PATTERN = re.compile(
     r"\[\s*\d+\s*\]|\bE\d+\b",
@@ -157,6 +157,7 @@ class RAGAnswerPipeline:
         self._maximum_context_characters = maximum_context_characters
         self._maximum_dense_score_drop = maximum_dense_score_drop
 
+    @traced("rag.answer")
     def answer(
         self,
         query: str,
@@ -454,6 +455,7 @@ class RAGAnswerPipeline:
     # Generation
     # -------------------------------------------------------------------
 
+    @traced("answer.generate_and_validate")
     def _generate_structured(
         self,
         prompt: GroundedPrompt,
@@ -465,61 +467,63 @@ class RAGAnswerPipeline:
         attempts = self._generation_retry_count + 1
 
         for attempt in range(attempts):
+            with span("answer.attempt"):
+                attributes(**{"rag.attempt": attempt + 1})
 
-            repair_instruction = ""
+                repair_instruction = ""
 
-            if attempt:
-                repair_instruction = _repair_instruction(
-                    language
+                if attempt:
+                    repair_instruction = _repair_instruction(
+                        language
+                    )
+
+                raw_response = self._generator.generate(
+                    prompt.user + repair_instruction,
+                    temperature=self._generation_temperature,
+                    system=prompt.system,
+                    format_schema=schema,
                 )
 
-            raw_response = self._generator.generate(
-                prompt.user + repair_instruction,
-                temperature=self._generation_temperature,
-                system=prompt.system,
-                format_schema=schema,
-            )
+                try:
+                    generated = GeneratedAnswer.model_validate_json(
+                        raw_response
+                    )
+                except ValidationError:
+                    continue
 
-            try:
-                generated = GeneratedAnswer.model_validate_json(
-                    raw_response
+                allowed_ids = set(
+                    prompt.citations_by_evidence_id
                 )
-            except ValidationError:
-                continue
 
-            allowed_ids = set(
-                prompt.citations_by_evidence_id
-            )
+                returned_ids = set(
+                    generated.evidence_ids
+                )
 
-            returned_ids = set(
-                generated.evidence_ids
-            )
+                # Never allow citations outside supplied evidence.
+                if not returned_ids <= allowed_ids:
+                    continue
 
-            # Never allow citations outside supplied evidence.
-            if not returned_ids <= allowed_ids:
-                continue
+                # A non-insufficient answer must cite evidence.
+                if (
+                    not generated.insufficient_evidence
+                    and not returned_ids
+                ):
+                    continue
 
-            # A non-insufficient answer must cite evidence.
-            if (
-                not generated.insufficient_evidence
-                and not returned_ids
-            ):
-                continue
+                # Model must not manufacture citation markers.
+                if _MODEL_CITATION_PATTERN.search(
+                    generated.answer
+                ):
+                    continue
 
-            # Model must not manufacture citation markers.
-            if _MODEL_CITATION_PATTERN.search(
-                generated.answer
-            ):
-                continue
+                # Enforce requested/detected answer language.
+                if not answer_matches_language(
+                    generated.answer,
+                    language,
+                ):
+                    continue
 
-            # Enforce requested/detected answer language.
-            if not answer_matches_language(
-                generated.answer,
-                language,
-            ):
-                continue
-
-            return generated
+                return generated
 
         return None
 
@@ -612,12 +616,45 @@ class RAGAnswerPipeline:
         )
 
 
+# =========================================================================
+# Candidate diversification
+# =========================================================================
+
+
+@traced("retrieval.diversify")
+def _diversify_candidates(
+    chunks: list[RetrievedChunk],
+    max_per_document: int = 4,
+) -> list[RetrievedChunk]:
+    """Keep at most ``max_per_document`` candidates from each document."""
+
+    selected: list[RetrievedChunk] = []
+
+    document_counts: dict[str, int] = defaultdict(int)
+
+    for chunk in chunks:
+
+        document_key = (
+            chunk.document_id
+            or chunk.source_file
+            or chunk.chunk_id
+        )
+
+        if document_counts[document_key] >= max_per_document:
+            continue
+
+        selected.append(chunk)
+        document_counts[document_key] += 1
+
+    return selected
+
 
 # =========================================================================
 # Evidence selection
 # =========================================================================
 
 
+@traced("evidence.select")
 def _select_evidence(
     *,
     query: str,

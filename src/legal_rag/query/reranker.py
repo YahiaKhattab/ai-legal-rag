@@ -24,8 +24,8 @@ from functools import lru_cache
 
 from sentence_transformers import CrossEncoder
 
+from legal_rag.observability.tracing import attributes, traced
 from legal_rag.query.models import RerankedChunk, RetrievedChunk
-
 
 _DEFAULT_MODEL_NAME = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
 
@@ -344,6 +344,7 @@ class CrossEncoderReranker:
             max_length=512,
         )
 
+    @traced("retrieval.rerank", "RERANKER")
     def rerank(
         self,
         query: str,
@@ -463,6 +464,10 @@ class CrossEncoderReranker:
             reverse=True,
         )
 
+        attributes(**{
+            "rag.raw_rerank_scores": [c.rerank_score for c, _ in reranked[:top_n]],
+            "rag.adjusted_rerank_scores": [score for _, score in reranked[:top_n]],
+        })
         return [
             chunk
             for chunk, _final_score in reranked[:top_n]

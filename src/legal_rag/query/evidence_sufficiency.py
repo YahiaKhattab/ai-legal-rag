@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from legal_rag.observability.tracing import attributes, traced
 from legal_rag.query.models import RerankedChunk, RetrievedChunk
 
 _IDENTIFIER_PATTERN = re.compile(
@@ -80,6 +81,7 @@ class EvidenceSufficiencyEvaluator:
     ) -> None:
         self._config = config or EvidenceSufficiencyConfig()
 
+    @traced("evidence.assess")
     def assess(
         self,
         query: str,
@@ -87,6 +89,13 @@ class EvidenceSufficiencyEvaluator:
         reranked: list[RerankedChunk],
     ) -> EvidenceAssessment:
 
+        attributes(**{
+            "rag.minimum_dense_score": self._config.minimum_dense_score,
+            "rag.minimum_rerank_score": self._config.minimum_rerank_score,
+            "rag.identifier_override_score": self._config.identifier_override_score,
+            "rag.minimum_lexical_overlap": self._config.minimum_lexical_overlap,
+            "rag.gate_enabled": self._config.enabled,
+        })
         top_dense_score = retrieved[0].score if retrieved else None
 
         dense_score_margin = retrieved[0].score - retrieved[1].score if len(retrieved) > 1 else None

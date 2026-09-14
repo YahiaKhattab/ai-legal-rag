@@ -32,6 +32,11 @@ legal-rag-query = "legal_rag.query.cli:main"
 
 
 [project.optional-dependencies]
+phoenix = [
+    "opentelemetry-sdk==1.44.0",
+    "opentelemetry-exporter-otlp-proto-http==1.44.0",
+]
+
 ocr = [
     "paddleocr==3.7.0",
     "paddlepaddle==3.1.1",
@@ -50,6 +55,7 @@ where = ["src"]
 
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 addopts = "-ra --strict-config --strict-markers"
 testpaths = ["tests"]
 markers = [
