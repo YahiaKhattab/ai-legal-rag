@@ -10,12 +10,17 @@ services:
     environment:
       # Service URLs point at the other containers on the compose network,
       # NOT localhost - localhost inside this container is this container.
-      LEGAL_RAG_QDRANT_URL: http://qdrant:6333
+      LEGAL_RAG_QDRANT_URL: https://a0fa18be-1572-4844-8f50-e33620bfe7ff.eu-central-1-0.aws.cloud.qdrant.io:6333
+      LEGAL_RAG_QDRANT_API_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIiwic3ViamVjdCI6ImFwaS1rZXk6OWNlMjQ2ZDAtOGM5Ni00NjQwLWI0NjEtMDcyMDA5YzU3MWY5In0.-pOvjoGL7ksAydIOH0Es2Xu0aYGgma78Maph90XgxHA
       LEGAL_RAG_OLLAMA_URL: http://ollama:11434
       LEGAL_RAG_QDRANT_COLLECTION: legal_chunks
       LEGAL_RAG_GENERATION_MODEL: qwen3:4b
       LEGAL_RAG_EMBEDDING_DEVICE: cpu
       LEGAL_RAG_RERANK_DEVICE: cpu
+
+      LEGAL_RAG_PHOENIX_ENABLED: "true"
+      LEGAL_RAG_PHOENIX_ENDPOINT: http://host.docker.internal:6006/v1/traces
+      LEGAL_RAG_PHOENIX_PROJECT: legal-rag-development
     depends_on:
       - qdrant
       - ollama

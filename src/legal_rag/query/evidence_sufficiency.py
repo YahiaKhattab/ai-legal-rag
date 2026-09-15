@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from legal_rag.observability.tracing import attributes, traced
 from legal_rag.query.models import RerankedChunk, RetrievedChunk
 
 
@@ -54,6 +55,11 @@ class EvidenceSufficiencyConfig:
     # article identifier exists.
     minimum_lexical_overlap: float = 0.08
 
+    # Lets an exact identifier match sourced purely from keyword search
+    # (no dense score at all) pass without meeting the dense threshold,
+    # provided the reranker independently confirms strong relevance.
+    keyword_identifier_override_rerank_score: float = 5.0
+
 
 @dataclass(frozen=True, slots=True)
 class EvidenceAssessment:
@@ -77,6 +83,7 @@ class EvidenceSufficiencyEvaluator:
     ) -> None:
         self._config = config or EvidenceSufficiencyConfig()
 
+    @traced("evidence.assess")
     def assess(
         self,
         query: str,
@@ -84,11 +91,14 @@ class EvidenceSufficiencyEvaluator:
         reranked: list[RerankedChunk],
     ) -> EvidenceAssessment:
 
-        top_dense_score = (
-            retrieved[0].score
-            if retrieved
-            else None
-        )
+        attributes(**{
+            "rag.minimum_dense_score": self._config.minimum_dense_score,
+            "rag.minimum_rerank_score": self._config.minimum_rerank_score,
+            "rag.identifier_override_score": self._config.identifier_override_score,
+            "rag.minimum_lexical_overlap": self._config.minimum_lexical_overlap,
+            "rag.gate_enabled": self._config.enabled,
+        })
+        top_dense_score = retrieved[0].score if retrieved else None
 
         dense_score_margin = (
             retrieved[0].score - retrieved[1].score
@@ -124,11 +134,24 @@ class EvidenceSufficiencyEvaluator:
         # does not mean the selected evidence supports the answer.
         # ---------------------------------------------------------------
 
-        exact_identifier_match = (
-            _has_exact_identifier_match_in_reranked(
-                query,
-                reranked,
-            )
+        dense_scores = {chunk.chunk_id: chunk.score for chunk in retrieved}
+
+        matched_identifier_chunk = _find_identifier_matching_chunk(
+            query,
+            reranked,
+        )
+        exact_identifier_match = matched_identifier_chunk is not None
+        matched_identifier_chunk_dense_score = (
+            dense_scores.get(matched_identifier_chunk.chunk_id)
+            if matched_identifier_chunk is not None
+            else None
+        )
+
+        keyword_identifier_override = (
+            exact_identifier_match
+            and matched_identifier_chunk_dense_score is None
+            and top_rerank_score is not None
+            and top_rerank_score >= self._config.keyword_identifier_override_rerank_score
         )
 
         law_match = _has_law_match(
@@ -210,6 +233,7 @@ class EvidenceSufficiencyEvaluator:
             not dense_sufficient
             and not identifier_override
             and not rerank_override
+            and not keyword_identifier_override
         ):
             return result(
                 False,
@@ -239,15 +263,12 @@ class EvidenceSufficiencyEvaluator:
             # If the query explicitly names a law and we have a law match,
             # this is even stronger.
             if law_match:
-                return result(
-                    True,
-                    "exact_article_and_law_match",
-                )
+                return result(True, "exact_article_and_law_match")
 
-            return result(
-                True,
-                "exact_article_match",
-            )
+            if keyword_identifier_override and not identifier_override:
+                return result(True, "keyword_identifier_override")
+
+            return result(True, "exact_article_match")
 
         # ---------------------------------------------------------------
         # CASE 2:
@@ -321,6 +342,31 @@ class EvidenceSufficiencyEvaluator:
 # Identifier matching
 # ---------------------------------------------------------------------------
 
+def _find_identifier_matching_chunk(
+    query: str,
+    reranked: list[RerankedChunk],
+) -> RerankedChunk | None:
+    """Return the first reranked chunk whose identifiers overlap the
+    query's, or None. Replaces _has_exact_identifier_match_in_reranked --
+    callers needing a bool can just check `is not None`.
+    """
+
+    query_identifiers = _extract_identifiers(query)
+
+    if not query_identifiers:
+        return None
+
+    for chunk in reranked:
+        evidence_text = "\n".join(
+            part
+            for part in (chunk.section_title, chunk.text)
+            if part
+        )
+
+        if query_identifiers & _extract_identifiers(evidence_text):
+            return chunk
+
+    return None
 
 def _extract_identifiers(text: str) -> set[str]:
     """Extract explicit article identifiers."""

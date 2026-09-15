@@ -17,6 +17,7 @@ from legal_rag.embeddings.models import EmbeddingConfig
 from legal_rag.ingestion.models import ChunkingConfig
 from legal_rag.ingestion.pipeline import IngestionPipeline
 from legal_rag.ingestion.validation import DEFAULT_MAXIMUM_DOCUMENT_BYTES
+from legal_rag.observability.tracing import correlate_session, traced_async
 from legal_rag.query.cli import _build_pipeline
 from legal_rag.query.models import CitedAnswer
 from legal_rag.query.ollama_client import OllamaGenerationClient
@@ -34,7 +35,6 @@ from legal_rag_api.schemas import (
     LegalEvidence,
     RenameConversationRequest,
 )
-
 
 router = APIRouter(
     prefix="/legalAi",

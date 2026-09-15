@@ -10,6 +10,7 @@ from legal_rag.chat_context.models import (
     Conversation,
     ConversationTopic,
 )
+from legal_rag.observability.tracing import traced
 
 
 class ChatMemoryStore:
@@ -28,6 +29,7 @@ class ChatMemoryStore:
             api_key=api_key,
         )
 
+    @traced("chat.memory.ensure")
     def ensure_collection(self) -> None:
         collections = self._client.get_collections().collections
         existing_names = {
@@ -315,7 +317,8 @@ class ChatMemoryStore:
         )
 
         return updated_conversation
-
+      
+    @traced("chat.memory.write")
     def save_message(
         self,
         conversation_id: UUID,
@@ -368,6 +371,7 @@ class ChatMemoryStore:
 
         return message
 
+    @traced("chat.memory.read")
     def get_recent_messages(
         self,
         conversation_id: UUID,
