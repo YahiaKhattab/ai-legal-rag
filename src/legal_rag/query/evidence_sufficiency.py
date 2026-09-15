@@ -19,12 +19,14 @@ from dataclasses import dataclass
 
 from legal_rag.query.models import RerankedChunk, RetrievedChunk
 
+
 _IDENTIFIER_PATTERN = re.compile(
     r"(?:المادة|مادة|article)"
     r"\s*(?:رقم|no\.?|number)?"
     r"\s*[\(\[\{]?\s*([0-9٠-٩]+)\s*[\)\]\}]?",
     re.IGNORECASE,
 )
+
 
 _LAW_PATTERN = re.compile(
     r"(?:قانون|law|act)\s+([^\n,؛؟?.]+)",
@@ -82,14 +84,31 @@ class EvidenceSufficiencyEvaluator:
         reranked: list[RerankedChunk],
     ) -> EvidenceAssessment:
 
-        top_dense_score = retrieved[0].score if retrieved else None
+        top_dense_score = (
+            retrieved[0].score
+            if retrieved
+            else None
+        )
 
-        dense_score_margin = retrieved[0].score - retrieved[1].score if len(retrieved) > 1 else None
+        dense_score_margin = (
+            retrieved[0].score - retrieved[1].score
+            if len(retrieved) > 1
+            else None
+        )
 
-        top_rerank_score = reranked[0].rerank_score if reranked else None
+        top_rerank_score = (
+            reranked[0].rerank_score
+            if reranked
+            else None
+        )
 
         source_count = len(
-            {chunk.document_id or chunk.source_file or chunk.chunk_id for chunk in retrieved}
+            {
+                chunk.document_id
+                or chunk.source_file
+                or chunk.chunk_id
+                for chunk in retrieved
+            }
         )
 
         # ---------------------------------------------------------------
@@ -105,9 +124,11 @@ class EvidenceSufficiencyEvaluator:
         # does not mean the selected evidence supports the answer.
         # ---------------------------------------------------------------
 
-        exact_identifier_match = _has_exact_identifier_match_in_reranked(
-            query,
-            reranked,
+        exact_identifier_match = (
+            _has_exact_identifier_match_in_reranked(
+                query,
+                reranked,
+            )
         )
 
         law_match = _has_law_match(
@@ -156,13 +177,20 @@ class EvidenceSufficiencyEvaluator:
         # Dense retrieval gate
         # ---------------------------------------------------------------
 
-        dense_sufficient = top_dense_score >= self._config.minimum_dense_score
+        dense_sufficient = (
+            top_dense_score
+            >= self._config.minimum_dense_score
+        )
 
-        minimum_rerank_score = self._config.minimum_rerank_score
+        minimum_rerank_score = (
+            self._config.minimum_rerank_score
+        )
 
         # A strong cross-encoder result can rescue a generic paraphrase
-        # that narrowly misses the dense threshold. Explicit article
-        # questions continue to use the stricter identifier override.
+        # that narrowly misses the dense threshold.
+        #
+        # Explicit article questions continue to use the stricter
+        # identifier override.
         rerank_override = (
             not dense_sufficient
             and not query_identifiers
@@ -174,10 +202,15 @@ class EvidenceSufficiencyEvaluator:
         identifier_override = (
             bool(query_identifiers)
             and exact_identifier_match
-            and top_dense_score >= self._config.identifier_override_score
+            and top_dense_score
+            >= self._config.identifier_override_score
         )
 
-        if not dense_sufficient and not identifier_override and not rerank_override:
+        if (
+            not dense_sufficient
+            and not identifier_override
+            and not rerank_override
+        ):
             return result(
                 False,
                 "dense_score_below_experimental_threshold",
@@ -202,6 +235,7 @@ class EvidenceSufficiencyEvaluator:
         # ---------------------------------------------------------------
 
         if query_identifiers and exact_identifier_match:
+
             # If the query explicitly names a law and we have a law match,
             # this is even stronger.
             if law_match:
@@ -220,11 +254,24 @@ class EvidenceSufficiencyEvaluator:
         #
         # Generic question without an explicit article number.
         #
-        # We need meaningful lexical overlap before allowing generation.
+        # Normally we require meaningful lexical overlap.
+        #
+        # However, when the cross-encoder itself gives a score at or above
+        # the configured minimum rerank threshold, that is strong evidence
+        # that the retrieved passage is semantically relevant even if
+        # Arabic wording differs because of OCR, morphology, or paraphrase.
         # ---------------------------------------------------------------
 
-        if lexical_overlap < self._config.minimum_lexical_overlap and not (
-            top_rerank_score is not None and top_rerank_score >= 5.0
+        strong_rerank_match = (
+            minimum_rerank_score is not None
+            and top_rerank_score is not None
+            and top_rerank_score >= minimum_rerank_score
+        )
+
+        if (
+            lexical_overlap
+            < self._config.minimum_lexical_overlap
+            and not strong_rerank_match
         ):
             return result(
                 False,
@@ -256,7 +303,18 @@ class EvidenceSufficiencyEvaluator:
                 "rerank_score_override",
             )
 
-        return result(True, "sufficient")
+        if strong_rerank_match and lexical_overlap < (
+            self._config.minimum_lexical_overlap
+        ):
+            return result(
+                True,
+                "strong_rerank_match",
+            )
+
+        return result(
+            True,
+            "sufficient",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -267,14 +325,17 @@ class EvidenceSufficiencyEvaluator:
 def _extract_identifiers(text: str) -> set[str]:
     """Extract explicit article identifiers."""
 
-    return {_normalize_digits(match.group(1)) for match in _IDENTIFIER_PATTERN.finditer(text)}
+    return {
+        _normalize_digits(match.group(1))
+        for match in _IDENTIFIER_PATTERN.finditer(text)
+    }
 
 
 def _has_exact_identifier_match_in_reranked(
     query: str,
     reranked: list[RerankedChunk],
 ) -> bool:
-    """Return True only when the selected evidence contains the same
+    """Return True only when selected evidence contains the same
     article identifier as the query.
     """
 
@@ -294,7 +355,9 @@ def _has_exact_identifier_match_in_reranked(
             if part
         )
 
-        evidence_identifiers = _extract_identifiers(evidence_text)
+        evidence_identifiers = _extract_identifiers(
+            evidence_text
+        )
 
         if query_identifiers & evidence_identifiers:
             return True
@@ -342,7 +405,6 @@ def _has_law_match(
     query_terms = _extract_law_terms(query)
 
     if not query_terms:
-        # Query does not explicitly name a law.
         return False
 
     for chunk in reranked:
@@ -405,14 +467,19 @@ def _best_lexical_overlap(
 
         evidence_tokens = _meaningful_tokens(evidence)
 
-        overlap = len(query_tokens & evidence_tokens)
+        overlap = len(
+            query_tokens & evidence_tokens
+        )
 
         score = overlap / max(
             len(query_tokens),
             1,
         )
 
-        best = max(best, score)
+        best = max(
+            best,
+            score,
+        )
 
     return best
 
@@ -457,7 +524,12 @@ def _meaningful_tokens(text: str) -> set[str]:
         "and",
     }
 
-    return {token for token in normalized.split() if len(token) >= 3 and token not in stop_words}
+    return {
+        token
+        for token in normalized.split()
+        if len(token) >= 3
+        and token not in stop_words
+    }
 
 
 def _normalize_text(text: str) -> str:

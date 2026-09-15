@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 
 import httpx
@@ -11,10 +12,12 @@ class OllamaGenerationClient:
         base_url: str = "http://localhost:11434",
         model: str = "qwen3:4b",
         timeout_seconds: float = 200.0,
+        max_tokens: int = 256,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout = timeout_seconds
+        self._max_tokens = max_tokens
 
     def generate(
         self,
@@ -44,12 +47,16 @@ class OllamaGenerationClient:
             }
         )
 
+        effective_max_tokens = (
+            self._max_tokens
+            if max_tokens is None
+            else max_tokens
+        )
+
         options: dict[str, object] = {
             "temperature": temperature,
+            "num_predict": effective_max_tokens,
         }
-
-        if max_tokens is not None:
-            options["num_predict"] = max_tokens
 
         payload: dict[str, object] = {
             "model": self._model,
@@ -62,10 +69,41 @@ class OllamaGenerationClient:
         if format_schema is not None:
             payload["format"] = dict(format_schema)
 
+        print("\n========== OLLAMA GENERATION ==========")
+        print(f"[Ollama] Model: {self._model}")
+        print(f"[Ollama] Timeout: {self._timeout}s")
+        print(
+            "[Ollama] Max tokens: "
+            f"{effective_max_tokens}"
+        )
+        print(
+            "[Ollama] Prompt characters: "
+            f"{len(prompt)}"
+        )
+        print(
+            "[Ollama] System characters: "
+            f"{len(system or '')}"
+        )
+        print(
+            "[Ollama] Structured format: "
+            f"{format_schema is not None}"
+        )
+
+        generation_start = time.perf_counter()
+
         response = httpx.post(
             f"{self._base_url}/api/chat",
             json=payload,
             timeout=self._timeout,
+        )
+
+        generation_time = (
+            time.perf_counter() - generation_start
+        )
+
+        print(
+            "[Ollama] HTTP generation time: "
+            f"{generation_time:.3f}s"
         )
 
         if response.status_code >= 400:
@@ -74,8 +112,14 @@ class OllamaGenerationClient:
             print(f"Model: {self._model}")
             print(f"Prompt characters: {len(prompt)}")
             print(f"System characters: {len(system or '')}")
-            print(f"Format schema: {format_schema is not None}")
-            print(f"Max tokens: {max_tokens}")
+            print(
+                "Format schema: "
+                f"{format_schema is not None}"
+            )
+            print(
+                "Max tokens: "
+                f"{effective_max_tokens}"
+            )
             print(f"Response: {response.text}")
             print("==================================\n")
 
@@ -86,16 +130,27 @@ class OllamaGenerationClient:
         message = data.get("message")
 
         if not isinstance(message, dict):
-            raise ValueError("Ollama response did not contain a message")
+            raise ValueError(
+                "Ollama response did not contain a message"
+            )
 
         generated = message.get("content")
 
         if not isinstance(generated, str):
             raise ValueError(
-                "Ollama response message did not contain generated content"
+                "Ollama response message did not contain "
+                "generated content"
             )
 
-        return self._clean_thinking(generated)
+        cleaned = self._clean_thinking(generated)
+
+        print(
+            "[Ollama] Generated characters: "
+            f"{len(cleaned)}"
+        )
+        print("=======================================\n")
+
+        return cleaned
 
     @staticmethod
     def _clean_thinking(text: str) -> str:
