@@ -1,8 +1,61 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+
+
+class CreateConversationRequest(BaseModel):
+    """Request model for creating a new conversation."""
+
+    title: str = Field(
+        default="New conversation",
+        min_length=1,
+        max_length=200,
+        description="Conversation title.",
+    )
+
+
+class RenameConversationRequest(BaseModel):
+    """Request model for renaming an existing conversation."""
+
+    title: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="New conversation title.",
+    )
+
+
+class ConversationResponse(BaseModel):
+    """Conversation metadata returned by the API."""
+
+    conversation_id: UUID
+    title: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConversationMessage(BaseModel):
+    """A single message returned as part of conversation history."""
+
+    message_id: UUID
+    role: str
+    content: str
+    timestamp: datetime
+
+
+class ConversationHistoryResponse(BaseModel):
+    """Full conversation history returned by the API."""
+
+    conversation_id: UUID
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    messages: list[ConversationMessage] = Field(
+        default_factory=list
+    )
 
 
 class AskRequest(BaseModel):
@@ -14,9 +67,9 @@ class AskRequest(BaseModel):
         description="Natural-language legal question.",
     )
 
-    session_id: UUID | None = Field(
-        default=None,
-        description="Internal conversation session identifier.",
+    conversation_id: UUID = Field(
+        ...,
+        description="Unique conversation identifier.",
     )
 
 
@@ -42,7 +95,7 @@ class CitationResponse(BaseModel):
 class AskResponse(BaseModel):
     """User-facing response for legal question answering."""
 
-    session_id: UUID
+    conversation_id: UUID
 
     question: str
     answer: str

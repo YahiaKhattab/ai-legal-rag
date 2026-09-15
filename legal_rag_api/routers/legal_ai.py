@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from uuid import uuid4
+from uuid import UUID
+import traceback
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from legal_rag.chat_context.contextualizer import QueryContextualizer
 from legal_rag.chat_context.memory import ChatMemoryStore
+from legal_rag.chat_context.topic_tracker import TopicTracker
 from legal_rag.config import Settings
 from legal_rag.embeddings.batch import BatchEmbedder
 from legal_rag.embeddings.encoder import EmbeddingEncoder
@@ -26,7 +28,12 @@ from legal_rag_api.schemas import (
     AskRequest,
     AskResponse,
     CitationResponse,
+    ConversationHistoryResponse,
+    ConversationMessage,
+    ConversationResponse,
+    CreateConversationRequest,
     LegalEvidence,
+    RenameConversationRequest,
 )
 
 router = APIRouter(
@@ -35,31 +42,16 @@ router = APIRouter(
 )
 
 
-# ======================================================================
-# ASK
-# ======================================================================
-
-
 @router.post(
-    "/Ask",
-    summary="Answer a legal question",
-    response_model=AskResponse,
+    "/Conversation",
+    summary="Create a new conversation",
+    response_model=ConversationResponse,
 )
-@traced_async("api.ask")
-async def ask(request: AskRequest) -> AskResponse:
-    """Answer a legal question using chat context and the legal RAG pipeline."""
-
+async def create_conversation(
+    request: CreateConversationRequest,
+) -> ConversationResponse:
     try:
         settings = Settings()
-
-        # ==============================================================
-        # CHAT SESSION
-        # ==============================================================
-
-        # Generate a new internal session ID when this is a new
-        # conversation. The user does not need to provide one manually.
-        session_id = request.session_id or uuid4()
-        correlate_session(session_id)
 
         chat_memory = ChatMemoryStore(
             url=settings.qdrant_url,
@@ -68,41 +60,326 @@ async def ask(request: AskRequest) -> AskResponse:
 
         chat_memory.ensure_collection()
 
-        # Retrieve recent conversation history for this session.
-        # Chat history is context only and is NEVER treated as legal
-        # evidence.
+        conversation = chat_memory.create_conversation(
+            title=request.title,
+        )
+
+        return ConversationResponse(
+            conversation_id=conversation.conversation_id,
+            title=conversation.title,
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at,
+        )
+
+    except Exception as exc:
+        print("\n========== CREATE CONVERSATION ERROR ==========")
+        traceback.print_exc()
+        print("==============================================\n")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to create the conversation.",
+        ) from exc
+
+
+@router.patch(
+    "/Conversation/{conversation_id}",
+    summary="Rename a conversation",
+    response_model=ConversationResponse,
+)
+async def rename_conversation(
+    conversation_id: UUID,
+    request: RenameConversationRequest,
+) -> ConversationResponse:
+    try:
+        settings = Settings()
+
+        chat_memory = ChatMemoryStore(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key,
+        )
+
+        chat_memory.ensure_collection()
+
+        conversation = chat_memory.rename_conversation(
+            conversation_id=conversation_id,
+            title=request.title,
+        )
+
+        if conversation is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Conversation not found.",
+            )
+
+        return ConversationResponse(
+            conversation_id=conversation.conversation_id,
+            title=conversation.title,
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at,
+        )
+
+    except HTTPException:
+        raise
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        print("\n========== RENAME CONVERSATION ERROR ==========")
+        traceback.print_exc()
+        print("===============================================\n")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to rename the conversation.",
+        ) from exc
+
+
+@router.delete(
+    "/Conversation/{conversation_id}",
+    summary="Delete a conversation",
+    status_code=204,
+)
+async def delete_conversation(
+    conversation_id: UUID,
+) -> None:
+    try:
+        settings = Settings()
+
+        chat_memory = ChatMemoryStore(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key,
+        )
+
+        chat_memory.ensure_collection()
+
+        deleted = chat_memory.delete_conversation(
+            conversation_id=conversation_id,
+        )
+
+        if not deleted:
+            raise HTTPException(
+                status_code=404,
+                detail="Conversation not found.",
+            )
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        print("\n========== DELETE CONVERSATION ERROR ==========")
+        traceback.print_exc()
+        print("===============================================\n")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to delete the conversation.",
+        ) from exc
+
+
+@router.get(
+    "/Conversations",
+    summary="List conversations",
+    response_model=list[ConversationResponse],
+)
+async def list_conversations() -> list[ConversationResponse]:
+    try:
+        settings = Settings()
+
+        chat_memory = ChatMemoryStore(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key,
+        )
+
+        chat_memory.ensure_collection()
+
+        conversations = chat_memory.list_conversations(
+            limit=50,
+        )
+
+        return [
+            ConversationResponse(
+                conversation_id=conversation.conversation_id,
+                title=conversation.title,
+                created_at=conversation.created_at,
+                updated_at=conversation.updated_at,
+            )
+            for conversation in conversations
+        ]
+
+    except Exception as exc:
+        print("\n========== LIST CONVERSATIONS ERROR ==========")
+        traceback.print_exc()
+        print("==============================================\n")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to list conversations.",
+        ) from exc
+
+
+@router.get(
+    "/Conversation/{conversation_id}",
+    summary="Get conversation history",
+    response_model=ConversationHistoryResponse,
+)
+async def get_conversation(
+    conversation_id: UUID,
+) -> ConversationHistoryResponse:
+    try:
+        settings = Settings()
+
+        chat_memory = ChatMemoryStore(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key,
+        )
+
+        chat_memory.ensure_collection()
+
+        conversation = chat_memory.get_conversation(
+            conversation_id,
+        )
+
+        if conversation is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Conversation not found.",
+            )
+
+        messages = chat_memory.get_recent_messages(
+            conversation_id=conversation_id,
+            limit=1000,
+        )
+
+        return ConversationHistoryResponse(
+            conversation_id=conversation.conversation_id,
+            title=conversation.title,
+            created_at=conversation.created_at,
+            updated_at=conversation.updated_at,
+            messages=[
+                ConversationMessage(
+                    message_id=message.message_id,
+                    role=message.role,
+                    content=message.content,
+                    timestamp=message.timestamp,
+                )
+                for message in messages
+            ],
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        print("\n========== GET CONVERSATION ERROR ==========")
+        traceback.print_exc()
+        print("============================================\n")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to retrieve the conversation.",
+        ) from exc
+
+
+@router.post(
+    "/Ask",
+    summary="Answer a legal question",
+    response_model=AskResponse,
+)
+async def ask(
+    request: AskRequest,
+) -> AskResponse:
+    try:
+        settings = Settings()
+
+        conversation_id = request.conversation_id
+
+        chat_memory = ChatMemoryStore(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key,
+        )
+
+        chat_memory.ensure_collection()
+
+        conversation = chat_memory.get_conversation(
+            conversation_id,
+        )
+
+        if conversation is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Conversation not found.",
+            )
+
         history = chat_memory.get_recent_messages(
-            session_id=session_id,
+            conversation_id=conversation_id,
             limit=10,
         )
 
-        # ==============================================================
-        # QUERY CONTEXTUALIZATION
-        # ==============================================================
+        current_topic = chat_memory.get_current_topic(
+            conversation_id=conversation_id,
+        )
 
-        # Use the dedicated non-thinking model for contextualization.
-        # qwen3:4b remains responsible for the final legal answer.
-        contextualization_client = OllamaGenerationClient(
+        topic_tracker_client = OllamaGenerationClient(
             base_url=settings.ollama_url,
             model=settings.contextualization_model,
-            timeout_seconds=settings.contextualization_timeout_seconds,
+            timeout_seconds=(
+                settings.contextualization_timeout_seconds
+            ),
+        )
+
+        topic_tracker = TopicTracker(
+            client=topic_tracker_client,
+        )
+
+        detected_topic = topic_tracker.extract_topic(
+            query=request.query,
+            previous_topic=current_topic,
+            previous_messages=history,
+        )
+
+        topic_source_message_id = UUID(
+            str(request.conversation_id)
+        )
+
+        saved_topic = chat_memory.save_topic(
+            conversation_id=conversation_id,
+            topic=detected_topic,
+            source_message_id=topic_source_message_id,
         )
 
         contextualizer = QueryContextualizer(
-            client=contextualization_client,
+            client=topic_tracker_client,
         )
 
-        # For a new conversation, this returns the original query
-        # unchanged. For a follow-up question, it rewrites the query
-        # into a standalone legal retrieval query.
         contextualized_query = contextualizer.contextualize(
             query=request.query,
             history=history,
+            current_topic=saved_topic.topic,
         )
 
-        # ==============================================================
-        # CURRENT RAG PIPELINE
-        # ==============================================================
+        print("\n========== CHAT CONTEXT ==========")
+        print(
+            f"[Chat Context] Conversation: "
+            f"{conversation_id}"
+        )
+        print(
+            f"[Chat Context] Current Topic: "
+            f"{saved_topic.topic}"
+        )
+        print(
+            f"[Chat Context] Original: "
+            f"{request.query}"
+        )
+        print(
+            "[Chat Context] Contextualized: "
+            f"{contextualized_query}"
+        )
+        print("==================================")
 
         pipeline = _build_pipeline(
             settings,
@@ -110,37 +387,48 @@ async def ask(request: AskRequest) -> AskResponse:
             rerank_top_n=settings.rerank_top_n,
         )
 
-        # IMPORTANT:
-        # Only the contextualized query enters legal retrieval.
-        # Chat history itself is never sent to the legal retriever.
+        print("\n========== PIPELINE START ==========")
+        print(
+            f"[Pipeline] Query: "
+            f"{contextualized_query}"
+        )
+
         result: CitedAnswer = pipeline.answer(
             contextualized_query,
             language="mixed",
             filters=RetrievalFilters(),
         )
 
-        # ==============================================================
-        # SAVE CONVERSATION
-        # ==============================================================
+        print("\n========== PIPELINE RESULT ==========")
+        print(
+            f"[Pipeline] Answer: "
+            f"{result.answer_text.strip()}"
+        )
+        print(
+            f"[Pipeline] Legal excerpts: "
+            f"{len(result.legal_excerpts)}"
+        )
+        print(
+            f"[Pipeline] Citations: "
+            f"{len(result.citations)}"
+        )
+        print(
+            f"[Pipeline] Full result: "
+            f"{result!r}"
+        )
+        print("=====================================")
 
-        # Save the ORIGINAL user question so the conversation remains
-        # faithful to what the user actually asked.
         chat_memory.save_message(
-            session_id=session_id,
+            conversation_id=conversation_id,
             role="user",
             content=request.query,
         )
 
-        # Save the final assistant answer.
         chat_memory.save_message(
-            session_id=session_id,
+            conversation_id=conversation_id,
             role="assistant",
             content=result.answer_text.strip(),
         )
-
-        # ==============================================================
-        # SELECTED LEGAL EVIDENCE
-        # ==============================================================
 
         selected_legal_evidence: list[LegalEvidence] = []
 
@@ -161,10 +449,6 @@ async def ask(request: AskRequest) -> AskResponse:
                 )
             )
 
-        # ==============================================================
-        # CITATIONS
-        # ==============================================================
-
         citations: list[CitationResponse] = []
 
         for citation in result.citations:
@@ -180,131 +464,143 @@ async def ask(request: AskRequest) -> AskResponse:
                 )
             )
 
-        # ==============================================================
-        # USER-FACING RESPONSE
-        # ==============================================================
-
         return AskResponse(
-            session_id=session_id,
+            conversation_id=conversation_id,
             question=request.query,
             answer=result.answer_text.strip(),
             selected_legal_evidence=selected_legal_evidence,
             citations=citations,
         )
 
+    except HTTPException:
+        raise
+
     except Exception as exc:
+        print("\n========== ASK ERROR ==========")
+        print(
+            f"[Ask Error] {type(exc).__name__}: {exc}"
+        )
+        traceback.print_exc()
+        print("================================\n")
+
         raise HTTPException(
             status_code=500,
             detail="Failed to process the legal query.",
         ) from exc
 
 
-# ======================================================================
-# QDRANT INDEXER
-# ======================================================================
-
-
-def _build_indexer(settings: Settings) -> QdrantIndexer:
-    """Build the configured Qdrant indexer."""
-
-    store = QdrantVectorStore(
-        url=settings.qdrant_url,
-        api_key=settings.qdrant_api_key,
-        collection_name=settings.qdrant_collection,
-        omit_normalized_text=settings.qdrant_omit_normalized_text,
-    )
-
-    embedder = BatchEmbedder(
-        EmbeddingEncoder(
-            EmbeddingConfig(
-                model_name=settings.embedding_model,
-                device=settings.embedding_device,
-            )
-        )
-    )
-
-    return QdrantIndexer(
-        store=store,
-        embedder=embedder,
-    )
-
-
-# ======================================================================
-# ADD NEW OPINION
-# ======================================================================
-
-
 @router.post(
     "/AddNewOpinion",
-    summary="Add a new legal opinion",
+    summary="Add a new legal opinion document",
 )
 async def add_new_opinion(
     file: UploadFile = File(...),
-) -> str:
-    """Ingest and index one legal opinion into Qdrant."""
-
-    if not file.filename:
-        return "Failed To Add"
-
+) -> dict[str, object]:
     try:
         settings = Settings()
 
-        with TemporaryDirectory() as temporary_directory:
+        if not file.filename:
+            raise HTTPException(
+                status_code=400,
+                detail="A file name is required.",
+            )
 
+        suffix = Path(file.filename).suffix.lower()
+
+        if suffix not in {".pdf", ".docx", ".txt"}:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Unsupported file type. "
+                    "Supported types are PDF, DOCX, and TXT."
+                ),
+            )
+
+        with TemporaryDirectory() as temporary_directory:
             temporary_path = (
                 Path(temporary_directory)
                 / file.filename
             )
 
-            file_content = await file.read()
+            total_bytes = 0
 
-            if not file_content:
-                return "Failed To Add"
+            with temporary_path.open("wb") as output_file:
+                while True:
+                    chunk = await file.read(1024 * 1024)
 
-            temporary_path.write_bytes(
-                file_content
-            )
+                    if not chunk:
+                        break
 
-            # ==========================================================
-            # INGESTION
-            # ==========================================================
+                    total_bytes += len(chunk)
+
+                    if (
+                        total_bytes
+                        > DEFAULT_MAXIMUM_DOCUMENT_BYTES
+                    ):
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                "The uploaded file exceeds "
+                                "the maximum allowed size."
+                            ),
+                        )
+
+                    output_file.write(chunk)
 
             ingestion_pipeline = IngestionPipeline(
-                expected_language="auto",
-                chunking=ChunkingConfig(
-                    target_tokens=400,
-                    overlap_tokens=60,
-                    maximum_tokens=480,
-                ),
-                maximum_document_bytes=(
-                    DEFAULT_MAXIMUM_DOCUMENT_BYTES
-                ),
+                chunking_config=ChunkingConfig(),
             )
 
-            summary = ingestion_pipeline.ingest(
+            ingestion_result = ingestion_pipeline.ingest(
                 temporary_path,
-                Path(temporary_directory),
-                document_version=1,
-                document_type="unknown",
-                source="unknown",
             )
 
-            if summary.chunks == 0:
-                return "Failed To Add"
-
-            # ==========================================================
-            # INDEX INTO QDRANT
-            # ==========================================================
-
-            indexer = _build_indexer(settings)
-
-            indexer.ensure_collection()
-
-            indexer.index_file(
-                summary.chunks_output
+            embedding_config = EmbeddingConfig(
+                model_name=settings.embedding_model,
+                device=settings.embedding_device,
             )
 
-        return "Added To Database Successfully"
+            encoder = EmbeddingEncoder(
+                config=embedding_config,
+            )
 
-    except Exception:
-        return "Failed To Add"
+            batch_embedder = BatchEmbedder(
+                encoder=encoder,
+            )
+
+            embeddings = batch_embedder.embed(
+                ingestion_result.chunks,
+            )
+
+            vector_store = QdrantVectorStore(
+                url=settings.qdrant_url,
+                api_key=settings.qdrant_api_key,
+                collection_name=settings.qdrant_collection,
+            )
+
+            indexer = QdrantIndexer(
+                vector_store=vector_store,
+            )
+
+            indexed_count = indexer.index(
+                chunks=ingestion_result.chunks,
+                embeddings=embeddings,
+            )
+
+        return {
+            "filename": file.filename,
+            "indexed_chunks": indexed_count,
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+        print("\n========== ADD OPINION ERROR ==========")
+        traceback.print_exc()
+        print("=======================================\n")
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to add the legal opinion.",
+        ) from exc  

@@ -21,6 +21,7 @@ relying on that gate.
 from __future__ import annotations
 
 import re
+import time
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import replace
@@ -165,26 +166,41 @@ class RAGAnswerPipeline:
         filters: RetrievalFilters | None = None,
     ) -> CitedAnswer:
 
+        pipeline_start = time.perf_counter()
+
+        print("\n========== PIPELINE TIMING ==========")
+
         # ---------------------------------------------------------------
         # 0. Resolve answer language
-        #
-        # When the caller uses "mixed", detect the dominant language
-        # of the user's question deterministically.
         # ---------------------------------------------------------------
+
+        stage_start = time.perf_counter()
 
         effective_language = detect_question_language(query)
 
         if language != "mixed":
             effective_language = language
 
+        print(
+            "[Timing] Language Detection: "
+            f"{time.perf_counter() - stage_start:.3f}s"
+        )
+
         # ---------------------------------------------------------------
         # 1. Dense retrieval
         # ---------------------------------------------------------------
+
+        stage_start = time.perf_counter()
 
         retrieved = self._retriever.search(
             query,
             top_k=self._retrieve_top_k,
             filters=filters,
+        )
+
+        print(
+            "[Timing] Dense Retrieval:    "
+            f"{time.perf_counter() - stage_start:.3f}s"
         )
 
         # ---------------------------------------------------------------
@@ -211,14 +227,32 @@ class RAGAnswerPipeline:
         else:
             fused_candidates = retrieved
 
+        print(
+            "[Timing] Diversification:     "
+            f"{time.perf_counter() - stage_start:.3f}s"
+        )
+
+        print(
+            "[Timing] Retrieved: "
+            f"{len(retrieved)} | "
+            f"Candidates after diversification: {len(candidates)}"
+        )
+
         # ---------------------------------------------------------------
         # 3. Cross-encoder reranking
         # ---------------------------------------------------------------
+
+        stage_start = time.perf_counter()
 
         reranked = self._reranker.rerank(
             query,
             fused_candidates,
             top_n=self._rerank_top_n,
+        )
+
+        print(
+            "[Timing] Reranking:           "
+            f"{time.perf_counter() - stage_start:.3f}s"
         )
 
         # ---------------------------------------------------------------
@@ -228,13 +262,28 @@ class RAGAnswerPipeline:
         # not `fused_candidates` -- see the module docstring for why.
         # ---------------------------------------------------------------
 
+        stage_start = time.perf_counter()
+
         assessment = self._sufficiency_evaluator.assess(
             query,
             retrieved,
             reranked,
         )
 
+        print(
+            "[Timing] Evidence Sufficiency:"
+            f" {time.perf_counter() - stage_start:.3f}s"
+        )
+
         if not assessment.sufficient:
+            total_time = time.perf_counter() - pipeline_start
+
+            print(
+                "[Timing] TOTAL:               "
+                f"{total_time:.3f}s"
+            )
+            print("=====================================\n")
+
             return self._insufficient_answer(
                 query=query,
                 language=effective_language,
@@ -244,13 +293,9 @@ class RAGAnswerPipeline:
 
         # ---------------------------------------------------------------
         # 5. Select evidence
-        #
-        # IMPORTANT:
-        # Evidence selection is query-aware.
-        #
-        # If the question contains an explicit article number, prefer
-        # chunks belonging to that exact article.
         # ---------------------------------------------------------------
+
+        stage_start = time.perf_counter()
 
         evidence = _select_evidence(
             query=query,
@@ -260,7 +305,20 @@ class RAGAnswerPipeline:
             maximum_dense_score_drop=self._maximum_dense_score_drop,
         )
 
+        print(
+            "[Timing] Evidence Selection: "
+            f"{time.perf_counter() - stage_start:.3f}s"
+        )
+
         if not evidence:
+            total_time = time.perf_counter() - pipeline_start
+
+            print(
+                "[Timing] TOTAL:               "
+                f"{total_time:.3f}s"
+            )
+            print("=====================================\n")
+
             return self._insufficient_answer(
                 query=query,
                 language=effective_language,
@@ -276,6 +334,8 @@ class RAGAnswerPipeline:
         # 6. Build grounded prompt
         # ---------------------------------------------------------------
 
+        stage_start = time.perf_counter()
+
         prompt = build_grounded_messages(
             query,
             evidence,
@@ -283,9 +343,22 @@ class RAGAnswerPipeline:
             maximum_context_characters=self._maximum_context_characters,
         )
 
+        print(
+            "[Timing] Prompt Building:     "
+            f"{time.perf_counter() - stage_start:.3f}s"
+        )
+
+        print(
+            "[Timing] Evidence Chunks: "
+            f"{len(evidence)} | "
+            f"Context chars: {len(prompt.user)}"
+        )
+
         # ---------------------------------------------------------------
         # 7. Structured generation
         # ---------------------------------------------------------------
+
+        stage_start = time.perf_counter()
 
         generated = self._generate_structured(
             prompt,
@@ -293,6 +366,14 @@ class RAGAnswerPipeline:
         )
 
         if generated is None:
+            total_time = time.perf_counter() - pipeline_start
+
+            print(
+                "[Timing] TOTAL:               "
+                f"{total_time:.3f}s"
+            )
+            print("=====================================\n")
+
             return self._generation_failure_answer(
                 query=query,
                 language=effective_language,
@@ -307,6 +388,14 @@ class RAGAnswerPipeline:
         # ---------------------------------------------------------------
 
         if generated.insufficient_evidence:
+            total_time = time.perf_counter() - pipeline_start
+
+            print(
+                "[Timing] TOTAL:               "
+                f"{total_time:.3f}s"
+            )
+            print("=====================================\n")
+
             return self._insufficient_answer(
                 query=query,
                 language=effective_language,
@@ -319,6 +408,8 @@ class RAGAnswerPipeline:
         # ---------------------------------------------------------------
         # 9. Validate returned evidence IDs
         # ---------------------------------------------------------------
+
+        stage_start = time.perf_counter()
 
         selected_pairs = []
 
@@ -340,7 +431,20 @@ class RAGAnswerPipeline:
                 )
             )
 
+        print(
+            "[Timing] Evidence ID Validation:"
+            f" {time.perf_counter() - stage_start:.3f}s"
+        )
+
         if not selected_pairs:
+            total_time = time.perf_counter() - pipeline_start
+
+            print(
+                "[Timing] TOTAL:               "
+                f"{total_time:.3f}s"
+            )
+            print("=====================================\n")
+
             return self._generation_failure_answer(
                 query=query,
                 language=effective_language,
@@ -358,6 +462,8 @@ class RAGAnswerPipeline:
         # 10. Citations
         # ---------------------------------------------------------------
 
+        stage_start = time.perf_counter()
+
         citations = [
             replace(
                 citation,
@@ -374,9 +480,16 @@ class RAGAnswerPipeline:
             for _, chunk in selected_pairs
         ]
 
+        print(
+            "[Timing] Citation Building:   "
+            f"{time.perf_counter() - stage_start:.3f}s"
+        )
+
         # ---------------------------------------------------------------
         # 11. Numeric claim validation
         # ---------------------------------------------------------------
+
+        stage_start = time.perf_counter()
 
         evidence_text = "\n\n".join(
             chunk.text
@@ -412,9 +525,16 @@ class RAGAnswerPipeline:
                 citations,
             )
 
+        print(
+            "[Timing] Numeric Validation:  "
+            f"{time.perf_counter() - stage_start:.3f}s"
+        )
+
         # ---------------------------------------------------------------
         # 12. Legal excerpts
         # ---------------------------------------------------------------
+
+        stage_start = time.perf_counter()
 
         legal_excerpts = [
             LegalExcerpt(
@@ -431,6 +551,20 @@ class RAGAnswerPipeline:
                 strict=True,
             )
         ]
+
+        print(
+            "[Timing] Legal Excerpts:      "
+            f"{time.perf_counter() - stage_start:.3f}s"
+        )
+
+        total_time = time.perf_counter() - pipeline_start
+
+        print(
+            "[Timing] TOTAL:               "
+            f"{total_time:.3f}s"
+        )
+
+        print("=====================================\n")
 
         return CitedAnswer(
             query=query,
@@ -484,46 +618,81 @@ class RAGAnswerPipeline:
                     format_schema=schema,
                 )
 
-                try:
-                    generated = GeneratedAnswer.model_validate_json(
-                        raw_response
-                    )
-                except ValidationError:
-                    continue
+            generation_start = time.perf_counter()
 
-                allowed_ids = set(
-                    prompt.citations_by_evidence_id
+            raw_response = self._generator.generate(
+                prompt.user + repair_instruction,
+                temperature=self._generation_temperature,
+                system=prompt.system,
+                format_schema=schema,
+            )
+
+            print(
+                "[Generation] Ollama response: "
+                f"{time.perf_counter() - generation_start:.3f}s"
+            )
+
+            validation_start = time.perf_counter()
+
+            try:
+                generated = GeneratedAnswer.model_validate_json(
+                    raw_response
                 )
+            except ValidationError:
+                print(
+                    "[Generation] JSON validation failed: "
+                    f"{time.perf_counter() - validation_start:.3f}s"
+                )
+                continue
 
                 returned_ids = set(
                     generated.evidence_ids
                 )
 
-                # Never allow citations outside supplied evidence.
-                if not returned_ids <= allowed_ids:
-                    continue
+            # Never allow citations outside supplied evidence.
+            if not returned_ids <= allowed_ids:
+                print(
+                    "[Generation] Rejected: invalid evidence IDs."
+                )
+                continue
 
-                # A non-insufficient answer must cite evidence.
-                if (
-                    not generated.insufficient_evidence
-                    and not returned_ids
-                ):
-                    continue
+            # A non-insufficient answer must cite evidence.
+            if (
+                not generated.insufficient_evidence
+                and not returned_ids
+            ):
+                print(
+                    "[Generation] Rejected: no evidence IDs."
+                )
+                continue
 
-                # Model must not manufacture citation markers.
-                if _MODEL_CITATION_PATTERN.search(
-                    generated.answer
-                ):
-                    continue
+            # Model must not manufacture citation markers.
+            if _MODEL_CITATION_PATTERN.search(
+                generated.answer
+            ):
+                print(
+                    "[Generation] Rejected: "
+                    "manufactured citation marker."
+                )
+                continue
 
-                # Enforce requested/detected answer language.
-                if not answer_matches_language(
-                    generated.answer,
-                    language,
-                ):
-                    continue
+            # Enforce requested/detected answer language.
+            if not answer_matches_language(
+                generated.answer,
+                language,
+            ):
+                print(
+                    "[Generation] Rejected: "
+                    "wrong answer language."
+                )
+                continue
 
-                return generated
+            print(
+                "[Generation] Post-validation: "
+                f"{time.perf_counter() - validation_start:.3f}s"
+            )
+
+            return generated
 
         return None
 
