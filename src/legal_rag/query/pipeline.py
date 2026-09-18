@@ -233,10 +233,10 @@ class RAGAnswerPipeline:
         )
 
         print(
-            "[Timing] Retrieved: "
-            f"{len(retrieved)} | "
-            f"Candidates after diversification: {len(candidates)}"
-        )
+        "[Timing] Retrieved: "
+        f"{len(retrieved)} | "
+        f"Candidates after diversification: {len(fused_candidates)}"
+    )
 
         # ---------------------------------------------------------------
         # 3. Cross-encoder reranking
@@ -607,9 +607,9 @@ class RAGAnswerPipeline:
                 repair_instruction = ""
 
                 if attempt:
-                    repair_instruction = _repair_instruction(
-                        language
-                    )
+                    repair_instruction = _repair_instruction(language)
+
+                generation_start = time.perf_counter()
 
                 raw_response = self._generator.generate(
                     prompt.user + repair_instruction,
@@ -618,82 +618,76 @@ class RAGAnswerPipeline:
                     format_schema=schema,
                 )
 
-            generation_start = time.perf_counter()
-
-            raw_response = self._generator.generate(
-                prompt.user + repair_instruction,
-                temperature=self._generation_temperature,
-                system=prompt.system,
-                format_schema=schema,
-            )
-
-            print(
-                "[Generation] Ollama response: "
-                f"{time.perf_counter() - generation_start:.3f}s"
-            )
-
-            validation_start = time.perf_counter()
-
-            try:
-                generated = GeneratedAnswer.model_validate_json(
-                    raw_response
-                )
-            except ValidationError:
                 print(
-                    "[Generation] JSON validation failed: "
-                    f"{time.perf_counter() - validation_start:.3f}s"
+                    "[Generation] Ollama response: "
+                    f"{time.perf_counter() - generation_start:.3f}s"
                 )
-                continue
+
+                validation_start = time.perf_counter()
+
+                try:
+                    generated = GeneratedAnswer.model_validate_json(
+                        raw_response
+                    )
+                except ValidationError:
+                    print(
+                        "[Generation] JSON validation failed: "
+                        f"{time.perf_counter() - validation_start:.3f}s"
+                    )
+                    continue
+
+                allowed_ids = set(
+                    prompt.citations_by_evidence_id
+                )
 
                 returned_ids = set(
                     generated.evidence_ids
                 )
 
-            # Never allow citations outside supplied evidence.
-            if not returned_ids <= allowed_ids:
+                # Never allow citations outside supplied evidence.
+                if not returned_ids <= allowed_ids:
+                    print(
+                        "[Generation] Rejected: invalid evidence IDs."
+                    )
+                    continue
+
+                # A non-insufficient answer must cite evidence.
+                if (
+                    not generated.insufficient_evidence
+                    and not returned_ids
+                ):
+                    print(
+                        "[Generation] Rejected: no evidence IDs."
+                    )
+                    continue
+
+                # Model must not manufacture citation markers.
+                if _MODEL_CITATION_PATTERN.search(
+                    generated.answer
+                ):
+                    print(
+                        "[Generation] Rejected: "
+                        "manufactured citation marker."
+                    )
+                    continue
+
+                # Enforce requested/detected answer language.
+                if not answer_matches_language(
+                    generated.answer,
+                    language,
+                ):
+                    print(
+                        "[Generation] Rejected: "
+                        "wrong answer language."
+                    )
+                    continue
+
                 print(
-                    "[Generation] Rejected: invalid evidence IDs."
+                    "[Generation] Post-validation: "
+                    f"{time.perf_counter() - validation_start:.3f}s"
                 )
-                continue
 
-            # A non-insufficient answer must cite evidence.
-            if (
-                not generated.insufficient_evidence
-                and not returned_ids
-            ):
-                print(
-                    "[Generation] Rejected: no evidence IDs."
-                )
-                continue
-
-            # Model must not manufacture citation markers.
-            if _MODEL_CITATION_PATTERN.search(
-                generated.answer
-            ):
-                print(
-                    "[Generation] Rejected: "
-                    "manufactured citation marker."
-                )
-                continue
-
-            # Enforce requested/detected answer language.
-            if not answer_matches_language(
-                generated.answer,
-                language,
-            ):
-                print(
-                    "[Generation] Rejected: "
-                    "wrong answer language."
-                )
-                continue
-
-            print(
-                "[Generation] Post-validation: "
-                f"{time.perf_counter() - validation_start:.3f}s"
-            )
-
-            return generated
-
+                return generated
         return None
 
     # -------------------------------------------------------------------
