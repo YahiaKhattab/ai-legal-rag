@@ -93,7 +93,7 @@ $env:LEGAL_RAG_QDRANT_URL = "http://localhost:6333"
 $env:LEGAL_RAG_QDRANT_API_KEY = ""
 $env:LEGAL_RAG_QDRANT_COLLECTION = "legal_chunks"
 $env:LEGAL_RAG_OLLAMA_URL = "http://localhost:11434"
-$env:LEGAL_RAG_GENERATION_MODEL = "qwen3:4b"
+$env:LEGAL_RAG_GENERATION_MODEL = "gemma3:4b"
 $env:PYTHONUTF8 = "1"
 
 # Start dependencies for the host CLI or host API:

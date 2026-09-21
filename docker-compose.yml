@@ -1,8 +1,6 @@
 services:
   ai-legal-rag-api:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: yahiakhattab/ai-legal-rag-api:2.0
     container_name: ai-legal-rag-api
     restart: unless-stopped
     ports:
@@ -14,7 +12,7 @@ services:
       LEGAL_RAG_QDRANT_API_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIiwic3ViamVjdCI6ImFwaS1rZXk6OWNlMjQ2ZDAtOGM5Ni00NjQwLWI0NjEtMDcyMDA5YzU3MWY5In0.-pOvjoGL7ksAydIOH0Es2Xu0aYGgma78Maph90XgxHA
       LEGAL_RAG_OLLAMA_URL: http://ollama:11434
       LEGAL_RAG_QDRANT_COLLECTION: legal_chunks
-      LEGAL_RAG_GENERATION_MODEL: qwen3:4b
+      LEGAL_RAG_GENERATION_MODEL: gemma3:4b
       LEGAL_RAG_EMBEDDING_DEVICE: cpu
       LEGAL_RAG_RERANK_DEVICE: cpu
 

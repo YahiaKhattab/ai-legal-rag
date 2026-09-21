@@ -27,13 +27,13 @@ def test_defaults_are_used_when_no_env_vars_set(monkeypatch):
 
     assert settings.qdrant_url == "http://localhost:6333"
     assert settings.ollama_url == "http://localhost:11434"
-    assert settings.generation_model == "qwen2.5:3b"
+    assert settings.generation_model == "gemma3:4b"
     assert settings.health_timeout_seconds == 5.0
 
 
 def test_environment_variables_override_defaults(monkeypatch):
     monkeypatch.setenv("LEGAL_RAG_QDRANT_URL", "http://my-qdrant-host:6333")
-    monkeypatch.setenv("LEGAL_RAG_GENERATION_MODEL", "llama3:8b")
+    monkeypatch.setenv("LEGAL_RAG_GENERATION_MODEL", "gemma3:4b")
 
     settings = Settings(_env_file=None)
 

@@ -1,7 +1,16 @@
 # ruff: noqa: RUF001 - Arabic fixtures intentionally exercise real legal text
 
-from legal_rag.ingestion.models import ExtractionMethod, PageRecord, SectionType, TextQuality
-from legal_rag.ingestion.structure import LegalStructureDetector, LineKind, classify_line
+from legal_rag.ingestion.models import (
+    ExtractionMethod,
+    PageRecord,
+    SectionType,
+    TextQuality,
+)
+from legal_rag.ingestion.structure import (
+    LegalStructureDetector,
+    LineKind,
+    classify_line,
+)
 
 _QUALITY = TextQuality(200, 0.8, 0.0, 0.0, 0.0)
 
@@ -33,11 +42,21 @@ def test_classifies_arabic_and_english_legal_lines() -> None:
     assert classify_line("فقرة عادية").kind is LineKind.PARAGRAPH
 
 
+def test_classifies_reversed_arabic_article_heading() -> None:
+    result = classify_line("مادة )٩٤١(")
+
+    assert result.kind is LineKind.ARTICLE
+    assert result.section_type is SectionType.ARTICLE
+    assert result.title == "مادة (١٤٩)"
+
+
 def test_carries_article_metadata_to_the_following_page() -> None:
     detector = LegalStructureDetector()
 
     first = detector.detect_page(_page("المادة (١)\nبداية النص", 1))
-    second = detector.detect_page(_page("تكملة نص المادة في الصفحة التالية", 2))
+    second = detector.detect_page(
+        _page("تكملة نص المادة في الصفحة التالية", 2)
+    )
 
     assert first[0].section_title == "المادة (١)"
     assert second[0].section_type is SectionType.ARTICLE

@@ -12,9 +12,9 @@ class OllamaGenerationClient:
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
-        model: str = "qwen3:4b",
+        model: str = "gemma3:4b",
         timeout_seconds: float = 200.0,
-        max_tokens: int = 256,
+        max_tokens: int = 384,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model

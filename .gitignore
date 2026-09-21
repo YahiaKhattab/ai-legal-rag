@@ -37,3 +37,5 @@ qdrant_storage/
 .idea/
 Thumbs.db
 .DS_Store
+*.snapshot
+.gitignore.my-updates
