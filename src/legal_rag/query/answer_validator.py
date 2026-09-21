@@ -31,7 +31,7 @@ _NUMBER_PATTERN = re.compile(
     (?:
         [0-9]+(?:[.,][0-9]+)*
         |
-        [٠-٩]+(?:[٫،.][٠-٩]+)*
+        [٠-٩۰-۹]+(?:[٫،.][٠-٩۰-۹]+)*
     )
     """,
     re.VERBOSE,
@@ -61,6 +61,26 @@ _ARABIC_NUMBER_WORDS = {
     "تسعة": 9,
     "تسع": 9,
     "عشرة": 10,
+    "عشر": 10,
+    "عشره": 10,
+    "عشرين": 20,
+    "عشرون": 20,
+    "ثلاثين": 30,
+    "ثلاثون": 30,
+    "أربعين": 40,
+    "اربعين": 40,
+    "أربعون": 40,
+    "اربعون": 40,
+    "خمسين": 50,
+    "خمسون": 50,
+    "ستين": 60,
+    "ستون": 60,
+    "سبعين": 70,
+    "سبعون": 70,
+    "ثمانين": 80,
+    "ثمانون": 80,
+    "تسعين": 90,
+    "تسعون": 90,
 }
 
 
@@ -69,7 +89,7 @@ _MILLION_PATTERN = re.compile(
     (
         [0-9]+(?:[.,][0-9]+)*
         |
-        [٠-٩]+(?:[٫،.][٠-٩]+)*
+        [٠-٩۰-۹]+(?:[٫،.][٠-٩۰-۹]+)*
     )
     \s*
     (?:مليون|ملايين|مليونًا|مليوناً|million|millions)
@@ -112,11 +132,11 @@ _ARABIC_MILLION_WORD_PATTERN = re.compile(
 
 
 def _normalize_number(value: str) -> str:
-    """Normalize Arabic and English digits."""
+    """Normalize Arabic, Persian, and English digits."""
 
     translation = str.maketrans(
-        "٠١٢٣٤٥٦٧٨٩",
-        "0123456789",
+        "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+        "01234567890123456789",
     )
 
     value = value.translate(translation)
@@ -126,6 +146,80 @@ def _normalize_number(value: str) -> str:
 
     return value.replace(",", "").strip(".")
 
+
+
+_ARABIC_SMALL = {
+    "صفر": 0, "واحد": 1, "واحدة": 1, "احد": 1, "احدى": 1,
+    "اثنان": 2, "اثنين": 2, "اثنتان": 2, "اثنتين": 2,
+    "ثلاثة": 3, "ثلاث": 3, "اربعة": 4, "اربع": 4,
+    "خمسة": 5, "خمس": 5, "ستة": 6, "ست": 6,
+    "سبعة": 7, "سبع": 7, "ثمانية": 8, "ثمان": 8,
+    "تسعة": 9, "تسع": 9, "عشرة": 10, "عشر": 10,
+}
+_ARABIC_TENS = {
+    "عشرين": 20, "عشرون": 20, "ثلاثين": 30, "ثلاثون": 30,
+    "اربعين": 40, "اربعون": 40, "خمسين": 50, "خمسون": 50,
+    "ستين": 60, "ستون": 60, "سبعين": 70, "سبعون": 70,
+    "ثمانين": 80, "ثمانون": 80, "تسعين": 90, "تسعون": 90,
+}
+_ARABIC_HUNDREDS = {
+    "مئة": 100, "مائه": 100, "مائة": 100, "مئتان": 200, "مائتان": 200,
+    "مئتين": 200, "مائتين": 200, "ثلاثمئة": 300, "ثلاثمائة": 300,
+    "اربعمئة": 400, "اربعمائة": 400, "خمسمئة": 500, "خمسمائة": 500,
+    "ستمئة": 600, "ستمائة": 600, "سبعمئة": 700, "سبعمائة": 700,
+    "ثمانمئة": 800, "ثمانمائة": 800, "تسعمئة": 900, "تسعمائة": 900,
+}
+def _norm_ar_word(w: str) -> str:
+    w = re.sub(r"[ًٌٍَُِّْٰ]", "", w).replace("ـ", "")
+    w = w.replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+    return w
+
+def _parse_arabic_integer_words(words: list[str]) -> int | None:
+    """Parse a consecutive Arabic cardinal-number phrase (up to millions)."""
+    vals = []
+    for raw in words:
+        w = _norm_ar_word(raw)
+        if w.startswith("و") and w[1:] in (_ARABIC_SMALL | _ARABIC_TENS | _ARABIC_HUNDREDS):
+            w = w[1:]
+        if w in _ARABIC_SMALL: vals.append(("n", _ARABIC_SMALL[w]))
+        elif w in _ARABIC_TENS: vals.append(("n", _ARABIC_TENS[w]))
+        elif w in _ARABIC_HUNDREDS: vals.append(("n", _ARABIC_HUNDREDS[w]))
+        elif w in ("الف", "الاف", "الفا", "الفين"): vals.append(("scale", 1000))
+        elif w in ("مليون", "ملايين"): vals.append(("scale", 1000000))
+        elif w == "و": continue
+        else: return None
+    if not vals: return None
+    total = current = 0
+    for typ, val in vals:
+        if typ == "scale":
+            total += max(current, 1) * val
+            current = 0
+        else:
+            current += val
+    return total + current
+
+def _extract_arabic_integer_phrases(text: str) -> set[int]:
+    tokens = re.findall(r"[أإآء-ي]+", text.lower())
+    out: set[int] = set()
+    run: list[str] = []
+    for token in tokens + ["__END__"]:
+        norm = _norm_ar_word(token) if token != "__END__" else token
+        recognized = (norm in _ARABIC_SMALL or norm in _ARABIC_TENS or
+                      norm in _ARABIC_HUNDREDS or norm in
+                      {"الف", "الاف", "الفا", "الفين", "مليون", "ملايين", "و"} or
+                      (norm.startswith("و") and norm[1:] in
+                       (_ARABIC_SMALL | _ARABIC_TENS | _ARABIC_HUNDREDS)))
+        if recognized:
+            run.append(token)
+        else:
+            if run:
+                value = _parse_arabic_integer_words(run)
+                if value is not None: out.add(value)
+                run = []
+    if run:
+        value = _parse_arabic_integer_words(run)
+        if value is not None: out.add(value)
+    return out
 
 def extract_numbers(text: str) -> set[str]:
     """Extract numeric digit values from text."""
@@ -138,6 +232,7 @@ def extract_numbers(text: str) -> set[str]:
         if normalized:
             numbers.add(normalized)
 
+    numbers.update(str(n) for n in _extract_arabic_integer_phrases(text))
     return numbers
 
 
@@ -179,6 +274,7 @@ def _extract_million_values(text: str) -> set[str]:
     # 3 million
     # 5 ملايين
     # ٣ ملايين
+    # ۳ میلیون
     for match in _MILLION_PATTERN.finditer(text):
         number = _normalize_number(match.group(1))
 
@@ -288,63 +384,136 @@ def _extract_threshold_values(text: str) -> set[str]:
     }
 
 
+_UNIT_ALIASES = {
+    "يوم": "day",
+    "يوما": "day",
+    "يومًا": "day",
+    "يوماً": "day",
+    "يومين": "day",
+    "أيام": "day",
+    "ايام": "day",
+    "سنة": "year",
+    "سنوات": "year",
+    "عام": "year",
+    "أعوام": "year",
+    "اعوام": "year",
+    "شهر": "month",
+    "شهور": "month",
+    "أشهر": "month",
+    "اشهر": "month",
+    "ساعة": "hour",
+    "ساعات": "hour",
+    "أسبوع": "week",
+    "اسبوع": "week",
+    "أسابيع": "week",
+    "اسابيع": "week",
+    "دقيقة": "minute",
+    "دقائق": "minute",
+    "day": "day",
+    "days": "day",
+    "year": "year",
+    "years": "year",
+    "month": "month",
+    "months": "month",
+    "hour": "hour",
+    "hours": "hour",
+    "week": "week",
+    "weeks": "week",
+    "minute": "minute",
+    "minutes": "minute",
+}
+
+
+def _extract_number_unit_claims(text: str) -> set[tuple[int, str]]:
+    """Extract simple number + duration-unit claims, including Arabic number words."""
+
+    tokens = re.findall(
+        r"[0-9٠-٩۰-۹]+|[أإآء-ي]+|[A-Za-z]+",
+        text.lower(),
+    )
+
+    claims: set[tuple[int, str]] = set()
+
+    # Strip common Arabic case endings/diacritics for reliable unit matching.
+    def norm_token(token: str) -> str:
+        token = token.replace("ـ", "")
+        token = re.sub(r"[ًٌٍَُِّْٰ]", "", token)
+        return token
+
+    normalized_tokens = [norm_token(t) for t in tokens]
+
+    for i, token in enumerate(normalized_tokens[:-1]):
+        value: int | None = None
+
+        if token.isdigit() or re.fullmatch(r"[٠-٩۰-۹]+", token):
+            try:
+                value = int(_normalize_number(token))
+            except ValueError:
+                pass
+        else:
+            value = _ARABIC_NUMBER_WORDS.get(token)
+
+        unit = _UNIT_ALIASES.get(normalized_tokens[i + 1])
+
+        if unit:
+            if value is not None:
+                claims.add((value, unit))
+            # Parse a multi-word cardinal immediately before the unit,
+            # e.g. "واحد وعشرين يوماً" -> (21, day).
+            start = i
+            while start > 0 and (
+                normalized_tokens[start - 1] in (_ARABIC_SMALL | _ARABIC_TENS | _ARABIC_HUNDREDS)
+                or normalized_tokens[start - 1] == "و"
+                or (normalized_tokens[start - 1].startswith("و") and
+                    normalized_tokens[start - 1][1:] in (_ARABIC_SMALL | _ARABIC_TENS | _ARABIC_HUNDREDS))
+            ):
+                start -= 1
+            phrase = normalized_tokens[start:i + 1]
+            parsed = _parse_arabic_integer_words(phrase)
+            if parsed is not None:
+                claims.add((parsed, unit))
+
+    return claims
+
+
+def _strip_list_numbering(text: str) -> str:
+    """Remove list labels (1., 1-, ١), etc.) before numeric-claim checks.
+
+    List labels are formatting, not substantive legal numeric claims.
+    Numbers elsewhere in the answer remain subject to validation.
+    """
+
+    return re.sub(
+        r"(?m)^\s*(?:[-*•]\s*)?[0-9٠-٩۰-۹]+[.)、-]\s*",
+        "",
+        text,
+    )
+
+
 def validate_numeric_claims(
     query: str,
     answer: str,
     evidence_text: str,
 ) -> tuple[bool, set[str], set[str]]:
-    """Validate numeric and legal-threshold claims.
+    """Validate numeric claims, legal thresholds, and number-duration units.
 
-    Rules:
-
-    1. Numbers supplied by the user may appear in the answer.
-    2. Numbers explicitly present in the evidence may appear in the answer.
-    3. A legal threshold appearing in the answer must agree with the
-       corresponding threshold found in the evidence.
-    4. A user case amount must NOT replace a different legal threshold.
-    5. A numeric component of a validated million value is also allowed.
-
-    Returns:
-        (
-            is_valid,
-            unsupported_or_conflicting_values,
-            evidence_numeric_values,
-        )
+    A number followed by a duration unit must be supported as the same
+    number-unit pair by either the question or the evidence.
     """
 
     query_numbers = extract_numbers(query)
-    answer_numbers = extract_numbers(answer)
+
+    # Ignore numeric labels used only to enumerate list items.
+    answer_for_numeric_checks = _strip_list_numbering(answer)
+
+    answer_numbers = extract_numbers(answer_for_numeric_checks)
     evidence_numbers = extract_numbers(evidence_text)
 
     query_millions = _extract_million_values(query)
-    answer_millions = _extract_million_values(answer)
+    answer_millions = _extract_million_values(answer_for_numeric_checks)
     evidence_millions = _extract_million_values(evidence_text)
 
-    # ---------------------------------------------------------
-    # FIX:
-    #
-    # A value such as "5 ملايين" produces:
-    #
-    #     answer_numbers  -> {"5"}
-    #     answer_millions -> {"5 million"}
-    #
-    # If the evidence says "خمسة ملايين", then:
-    #
-    #     evidence_numbers  -> {}
-    #     evidence_millions -> {"5 million"}
-    #
-    # The old validator incorrectly marked "5" as unsupported.
-    #
-    # We therefore allow the numeric base of a million value when
-    # that complete million value is already supported by the evidence
-    # or supplied by the user.
-    # ---------------------------------------------------------
-
-    validated_million_values = (
-        query_millions
-        | evidence_millions
-    )
-
+    validated_million_values = query_millions | evidence_millions
     validated_million_base_numbers = _million_base_numbers(
         validated_million_values
     )
@@ -356,77 +525,41 @@ def validate_numeric_claims(
         - validated_million_base_numbers
     )
 
-    answer_thresholds = _extract_threshold_values(answer)
+    answer_thresholds = _extract_threshold_values(
+        answer_for_numeric_checks
+    )
     evidence_thresholds = _extract_threshold_values(evidence_text)
 
-    # ---------------------------------------------------------
-    # Rule 1:
-    # A generated legal threshold must exist in the evidence.
-    # ---------------------------------------------------------
     for value in answer_thresholds:
         if value not in evidence_thresholds:
             unsupported_numbers.add(value)
 
-    # ---------------------------------------------------------
-    # Rule 2:
-    # If the evidence contains a legal threshold and the answer
-    # contains another threshold, the answer is invalid.
-    #
-    # Example:
-    #
-    # Evidence:
-    #     أقل من خمسة ملايين
-    #
-    # Answer:
-    #     أقل من ثلاثة ملايين
-    #
-    # Even though "3 million" exists in the user question,
-    # it is invalid when used as a legal threshold.
-    # ---------------------------------------------------------
-    if (
-        evidence_thresholds
-        and answer_thresholds
-        and not answer_thresholds.issubset(evidence_thresholds)
-    ):
+    if evidence_thresholds and answer_thresholds:
         unsupported_numbers.update(
             answer_thresholds - evidence_thresholds
         )
 
-    # ---------------------------------------------------------
-    # Rule 3:
-    # A million value that is merely a case amount is allowed.
-    #
-    # Example:
-    #     "قضيتك البالغة 3 ملايين..."
-    #
-    # if 3 million exists in the question.
-    # ---------------------------------------------------------
     for value in answer_millions:
-        if value in query_millions:
-            continue
+        if value not in query_millions and value not in evidence_millions:
+            unsupported_numbers.add(value)
 
-        if value in evidence_millions:
-            continue
-
-        unsupported_numbers.add(value)
-
-    # ---------------------------------------------------------
-    # Rule 4:
-    # Preserve evidence thresholds even when the user supplied
-    # another amount.
-    #
-    # Example:
-    #
-    # Query:     3 million
-    # Evidence:  5 million threshold
-    # Answer:    3 million threshold
-    #
-    # -> invalid.
-    # ---------------------------------------------------------
     if evidence_thresholds:
-        for answer_value in answer_thresholds:
-            if answer_value not in evidence_thresholds:
-                unsupported_numbers.add(answer_value)
+        unsupported_numbers.update(
+            answer_thresholds - evidence_thresholds
+        )
+
+    # Reject changed or hallucinated duration units, e.g. evidence "10 days"
+    # but generated answer "10 years" or "ten ages".
+    supported_duration_claims = (
+        _extract_number_unit_claims(query)
+        | _extract_number_unit_claims(evidence_text)
+    )
+
+    for value, unit in _extract_number_unit_claims(
+        answer_for_numeric_checks
+    ):
+        if (value, unit) not in supported_duration_claims:
+            unsupported_numbers.add(f"{value} {unit}")
 
     evidence_numeric_values = (
         evidence_numbers

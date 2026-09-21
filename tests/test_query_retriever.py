@@ -49,6 +49,7 @@ def test_retriever_maps_payload_and_applies_source_filter() -> None:
         ],
         wait=True,
     )
+
     retriever = LegalRetriever(
         store=store,
         embedder=cast(QueryEmbedder, FakeQueryEmbedder()),
@@ -63,3 +64,38 @@ def test_retriever_maps_payload_and_applies_source_filter() -> None:
     assert results[0].chunk_id == "chunk-1"
     assert results[0].text == "relevant text"
     assert results[0].page == 3
+
+
+def test_retriever_prefers_normalized_text_over_original_text() -> None:
+    store = QdrantVectorStore(
+        collection_name="normalized-text-test",
+        vector_size=3,
+        client=QdrantClient(":memory:"),
+    )
+    store.create_collection()
+    store.client.upsert(
+        collection_name=store.collection_name,
+        points=[
+            PointStruct(
+                id=1,
+                vector=[1.0, 0.0, 0.0],
+                payload={
+                    "chunk_id": "chunk-normalized",
+                    "document_id": "document-1",
+                    "original_text": "النص الخام من OCR",
+                    "normalized_text": "النص بعد التطبيع",
+                },
+            ),
+        ],
+        wait=True,
+    )
+
+    retriever = LegalRetriever(
+        store=store,
+        embedder=cast(QueryEmbedder, FakeQueryEmbedder()),
+    )
+
+    results = retriever.search("question")
+
+    assert len(results) == 1
+    assert results[0].text == "النص بعد التطبيع"

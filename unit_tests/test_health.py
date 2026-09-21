@@ -86,19 +86,19 @@ def test_check_qdrant_unhealthy_on_bad_status_code():
 
 
 def test_check_ollama_healthy_when_model_installed():
-    settings = Settings(_env_file=None, generation_model="qwen2.5:3b")
+    settings = Settings(_env_file=None, generation_model="gemma3:4b")
     client = _FakeClient(
-        [_FakeResponse(json_data={"models": [{"name": "qwen2.5:3b", "model": "qwen2.5:3b"}]})]
+        [_FakeResponse(json_data={"models": [{"name": "gemma3:4b", "model": "gemma3:4b"}]})]
     )
 
     result = check_ollama(client, settings)
 
     assert result.status is HealthStatus.HEALTHY
-    assert "qwen2.5:3b" in result.detail
+    assert "gemma3:4b" in result.detail
 
 
 def test_check_ollama_unhealthy_when_model_missing():
-    settings = Settings(_env_file=None, generation_model="qwen2.5:3b")
+    settings = Settings(_env_file=None, generation_model="gemma3:4b")
     client = _FakeClient([_FakeResponse(json_data={"models": [{"name": "llama3:8b"}]})])
 
     result = check_ollama(client, settings)
@@ -140,7 +140,7 @@ def test_run_health_checks_uses_a_real_httpx_client(monkeypatch):
             return _FakeClient(
                 [
                     _FakeResponse(status_code=200),
-                    _FakeResponse(json_data={"models": [{"name": "qwen2.5:3b"}]}),
+                    _FakeResponse(json_data={"models": [{"name": "gemma3:4b"}]}),
                 ]
             )
 
@@ -149,7 +149,7 @@ def test_run_health_checks_uses_a_real_httpx_client(monkeypatch):
 
     monkeypatch.setattr(httpx, "Client", _Recorder)
 
-    settings = Settings(_env_file=None, generation_model="qwen2.5:3b")
+    settings = Settings(_env_file=None, generation_model="gemma3:4b")
     results = run_health_checks(settings)
 
     assert [result.service for result in results] == ["qdrant", "ollama"]

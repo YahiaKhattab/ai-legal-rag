@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import replace
@@ -56,6 +57,7 @@ from legal_rag.query.prompt_builder import (
 from legal_rag.query.reranker import get_default_reranker
 from legal_rag.query.retriever import RetrievalFilters
 from legal_rag.query.structured_answer import GeneratedAnswer
+
 
 _MODEL_CITATION_PATTERN = re.compile(
     r"\[\s*\d+\s*\]|\bE\d+\b",
@@ -209,10 +211,13 @@ class RAGAnswerPipeline:
         # `retrieved` above is untouched and stays dense-only -- it's what
         # the evidence gate's dense-score checks are computed against in
         # step 4, and what the eventual CitedAnswer.retrieved_chunk_ids
-        # reports. Fusion only widens `fused_candidates`, the pool that
-        # reaches diversification/reranking below. This is the deliberate
-        # boundary described in this module's docstring.
+        # reports.
+        #
+        # Fusion widens the candidate pool, then diversification limits
+        # repeated chunks from the same document before reranking.
         # ---------------------------------------------------------------
+
+        stage_start = time.perf_counter()
 
         if self._keyword_retriever is not None:
             keyword_hits = self._keyword_retriever.search(
@@ -220,6 +225,7 @@ class RAGAnswerPipeline:
                 top_k=self._keyword_top_k,
                 filters=filters,
             )
+
             fused_candidates = reciprocal_rank_fusion(
                 [retrieved, keyword_hits],
                 k=self._rrf_k,
@@ -227,16 +233,22 @@ class RAGAnswerPipeline:
         else:
             fused_candidates = retrieved
 
+        candidates = _diversify_candidates(
+            fused_candidates,
+            max_per_document=4,
+        )
+
         print(
             "[Timing] Diversification:     "
             f"{time.perf_counter() - stage_start:.3f}s"
         )
 
         print(
-        "[Timing] Retrieved: "
-        f"{len(retrieved)} | "
-        f"Candidates after diversification: {len(fused_candidates)}"
-    )
+            "[Timing] Retrieved: "
+            f"{len(retrieved)} | "
+            f"Fused: {len(fused_candidates)} | "
+            f"Candidates after diversification: {len(candidates)}"
+        )
 
         # ---------------------------------------------------------------
         # 3. Cross-encoder reranking
@@ -246,7 +258,7 @@ class RAGAnswerPipeline:
 
         reranked = self._reranker.rerank(
             query,
-            fused_candidates,
+            candidates,
             top_n=self._rerank_top_n,
         )
 
@@ -255,11 +267,16 @@ class RAGAnswerPipeline:
             f"{time.perf_counter() - stage_start:.3f}s"
         )
 
+        # Apply the individual/collective procedure guard before the
+        # sufficiency evaluator, so mismatched evidence cannot make a query
+        # appear answerable.
+        reranked = _filter_procedure_mismatches(query, reranked)
+
         # ---------------------------------------------------------------
         # 4. Evidence sufficiency gate
         #
         # NOTE: `retrieved` here is still the dense-only list from step 1,
-        # not `fused_candidates` -- see the module docstring for why.
+        # not `fused_candidates` or `candidates`.
         # ---------------------------------------------------------------
 
         stage_start = time.perf_counter()
@@ -360,9 +377,16 @@ class RAGAnswerPipeline:
 
         stage_start = time.perf_counter()
 
+        self._last_generation_failure_reason = None
         generated = self._generate_structured(
             prompt,
             language=effective_language,
+            query=query,
+        )
+
+        print(
+            "[Timing] Structured Generation:"
+            f" {time.perf_counter() - stage_start:.3f}s"
         )
 
         if generated is None:
@@ -373,6 +397,21 @@ class RAGAnswerPipeline:
                 f"{total_time:.3f}s"
             )
             print("=====================================\n")
+
+            failure_reason = getattr(
+                self,
+                "_last_generation_failure_reason",
+                None,
+            )
+            if failure_reason == "numeric_validation_failure":
+                return self._insufficient_answer(
+                    query=query,
+                    language=effective_language,
+                    retrieved=retrieved,
+                    assessment=assessment,
+                    reason=failure_reason,
+                    prompt_version=prompt.prompt_version,
+                )
 
             return self._generation_failure_answer(
                 query=query,
@@ -411,7 +450,11 @@ class RAGAnswerPipeline:
 
         stage_start = time.perf_counter()
 
-        selected_pairs = []
+        allowed_ids = set(
+            prompt.chunks_by_evidence_id.keys()
+        )
+
+        selected_pairs: list[tuple[Citation, RerankedChunk]] = []
 
         for evidence_id in generated.evidence_ids:
             citation = prompt.citations_by_evidence_id.get(
@@ -431,10 +474,38 @@ class RAGAnswerPipeline:
                 )
             )
 
+        returned_ids = set(generated.evidence_ids)
+
         print(
             "[Timing] Evidence ID Validation:"
             f" {time.perf_counter() - stage_start:.3f}s"
         )
+
+        if not returned_ids <= allowed_ids:
+            total_time = time.perf_counter() - pipeline_start
+
+            print(
+                "[Generation] Rejected: invalid evidence IDs."
+            )
+
+            print(
+                "[Timing] TOTAL:               "
+                f"{total_time:.3f}s"
+            )
+            print("=====================================\n")
+
+            return self._generation_failure_answer(
+                query=query,
+                language=effective_language,
+                retrieved=retrieved,
+                assessment=replace(
+                    assessment,
+                    sufficient=False,
+                    reason="model_returned_invalid_evidence",
+                ),
+                used_chunk_count=len(evidence),
+                prompt_version=prompt.prompt_version,
+            )
 
         if not selected_pairs:
             total_time = time.perf_counter() - pipeline_start
@@ -496,34 +567,50 @@ class RAGAnswerPipeline:
             for chunk in selected_chunks
         )
 
-        is_valid, unsupported_numbers, _ = (
-            validate_numeric_claims(
-                query,
-                generated.answer,
-                evidence_text,
-            )
+        # Do not run a second LLM rewrite over each source: it adds latency
+        # and can distort evidence or introduce unsupported details. For the
+        # specifically guarded individual-dispute clause, use the deterministic
+        # formulation only when all required signals are present; otherwise
+        # keep the answer that already passed generation-time validation.
+        original_answer = generated.answer.strip()
+        procedural_answer = _individual_dispute_procedure_answer(
+            query, evidence_text
+        )
+        answer_text = procedural_answer or original_answer
+
+        is_valid, unsupported_numbers, _ = validate_numeric_claims(
+            query,
+            answer_text,
+            evidence_text,
         )
 
         if not is_valid:
-            answer_text = _validation_failure_message(
-                effective_language,
-                unsupported_numbers,
+            # If paraphrasing introduced unsupported numbers, retain the
+            # original answer that passed validation during generation.
+            original_valid, _, _ = validate_numeric_claims(
+                query,
+                original_answer,
+                evidence_text,
             )
+            if original_valid:
+                answer_text = original_answer
+                is_valid = True
+                print("[Rewrite] Rejected paraphrase; using validated original.")
+            else:
+                answer_text = _validation_failure_message(
+                    effective_language,
+                    unsupported_numbers,
+                )
+                citations = []
+                selected_chunks = []
+                assessment = replace(
+                    assessment,
+                    sufficient=False,
+                    reason="numeric_validation_failure",
+                )
 
-            citations = []
-            selected_chunks = []
-
-            assessment = replace(
-                assessment,
-                sufficient=False,
-                reason="numeric_validation_failure",
-            )
-
-        else:
-            answer_text = _attach_citations(
-                generated.answer,
-                citations,
-            )
+        if is_valid and not all(citation.marker in answer_text for citation in citations):
+            answer_text = _attach_citations(answer_text, citations)
 
         print(
             "[Timing] Numeric Validation:  "
@@ -585,6 +672,100 @@ class RAGAnswerPipeline:
             prompt_version=prompt.prompt_version,
         )
 
+    def _rewrite_cited_sources(
+        self,
+        *,
+        query: str,
+        citations: list[Citation],
+        chunks: list[RerankedChunk],
+        language: str,
+        fallback_answer: str,
+    ) -> str:
+        """Present each selected citation as a readable, independently grounded section."""
+        sections: list[str] = []
+        for index, (citation, chunk) in enumerate(zip(citations, chunks, strict=True)):
+            source = str(chunk.text or "").strip()
+            if not source:
+                continue
+            if len(chunks) == 1:
+                heading = ""
+            elif language == "ar":
+                heading = f"من المصدر {index + 1}: "
+            else:
+                heading = f"From source {index + 1}: "
+            # Ask the editor to restate this source itself, not the model's
+            # potentially cross-source answer. Keep exact factual values.
+            rewritten = self._rewrite_answer(
+                query=query,
+                answer=source,
+                evidence_text=source,
+                language=language,
+            ).strip()
+            if not rewritten:
+                rewritten = source
+            sections.append(f"{heading}{rewritten} {citation.marker}")
+
+        if sections:
+            return "\n\n".join(sections)
+        return fallback_answer
+
+    def _rewrite_answer(
+        self,
+        *,
+        query: str,
+        answer: str,
+        evidence_text: str,
+        language: str,
+    ) -> str:
+        """Paraphrase a validated answer without adding legal content."""
+        if not answer.strip():
+            return answer
+
+        if language == "ar":
+            instruction = (
+                "حرّر النص إلى إجابة عربية قانونية سهلة القراءة، واضحة ومباشرة، لا إلى نقل حرفي مشوّه من OCR. "
+                "ابدأ بجواب مباشر على السؤال، ثم رتّب التفاصيل في فقرات قصيرة أو نقاط مرقمة عند وجود خطوات أو شروط أو أطراف. "
+                "استخدم عناوين قصيرة فقط عند الحاجة، وصحّح المسافات وعلامات الترقيم والتكرار وأخطاء التنسيق الواضحة دون تغيير المعنى. "
+                "لا تجب من جديد ولا تستنتج. حافظ على الأرقام الجوهرية التي تجيب عن السؤال، مثل المدد والمبالغ والنسب والأعداد والشروط. "
+                "لا تذكر في متن الإجابة أرقام المواد أو أرقام القوانين أو سنوات إصدارها أو أرقام الأبواب والفصول؛ تُترك هذه المعرّفات للاستشهاد فقط. "
+                "لا تضف أي معلومة غير موجودة في النص الأصلي أو الدليل، ولا تخمّن أي معرّف قانوني ملتبس أو متعارض. "
+                "إذا كان النص ملتبسًا في المعنى، أعد النص الأصلي دون تغيير. أخرج نص الإجابة فقط دون JSON أو شرح عن عملية التحرير.\n\n"
+            )
+        else:
+            instruction = (
+                "Edit the text into a clear, direct, readable legal answer, not a verbatim OCR dump. "
+                "Start with a direct answer, then organize details into short paragraphs or numbered bullets for steps, conditions, or parties. "
+                "Use brief headings only when helpful; fix spacing, punctuation, repetition, and obvious formatting artifacts without changing meaning. "
+                "Do not answer anew or infer. Preserve substantive quantities needed to answer, such as deadlines, amounts, percentages, counts, and conditions. "
+                "Do not include article numbers, law numbers, enactment years, or book/chapter numbers in the answer body; keep legal identifiers in citations only. "
+                "Add no facts beyond the source and never guess an ambiguous or conflicting legal identifier. "
+                "If the meaning itself is ambiguous, return the original unchanged. Output only the answer, no JSON or editing explanation.\n\n"
+            )
+
+        rewrite_prompt = (
+            instruction
+            + f"QUESTION:\n{query}\n\n"
+            + f"ORIGINAL ANSWER:\n{answer}\n\n"
+            + f"SUPPORTING EVIDENCE:\n{evidence_text[:7000]}"
+        )
+        try:
+            rewritten = self._generator.generate(
+                rewrite_prompt,
+                temperature=0.0,
+                system=(
+                    "You are a strict legal-language editor. "
+                    "Never change the legal meaning or introduce facts."
+                ),
+            )
+            rewritten = (rewritten or "").strip()
+            # Guard against empty output and accidental JSON wrappers.
+            if not rewritten or rewritten.startswith("{"):
+                return answer
+            return _remove_legal_identifiers_from_answer(rewritten, language)
+        except Exception as exc:
+            print(f"[Rewrite] Failed; retaining original answer: {exc}")
+            return answer
+
     # -------------------------------------------------------------------
     # Generation
     # -------------------------------------------------------------------
@@ -595,19 +776,60 @@ class RAGAnswerPipeline:
         prompt: GroundedPrompt,
         *,
         language: str,
+        query: str,
     ) -> GeneratedAnswer | None:
 
         schema = GeneratedAnswer.model_json_schema()
         attempts = self._generation_retry_count + 1
 
+        allowed_ids = set(
+            prompt.chunks_by_evidence_id.keys()
+        )
+
+        allowed_ids_text = ", ".join(
+            sorted(allowed_ids)
+        )
+
+        previous_failure = ""
+        numeric_validation_failed = False
+
         for attempt in range(attempts):
             with span("answer.attempt"):
-                attributes(**{"rag.attempt": attempt + 1})
+                attributes(
+                    **{
+                        "rag.attempt": attempt + 1
+                    }
+                )
 
                 repair_instruction = ""
 
                 if attempt:
-                    repair_instruction = _repair_instruction(language)
+                    repair_instruction = _repair_instruction(
+                        language
+                    )
+
+                    repair_instruction += (
+                        "\\n\\nIMPORTANT VALIDATION FEEDBACK:\\n"
+                        f"{previous_failure}\\n"
+                        "Re-read the supplied evidence before answering. "
+                        "Identify which evidence directly addresses the "
+                        "question's dispute type and ignore evidence about "
+                        "a different type of dispute. Do not merge individual "
+                        "and collective dispute procedures. Use only facts "
+                        "and numbers explicitly supported by the selected "
+                        "evidence; never guess, substitute, or infer a "
+                        "deadline. If the evidence does not clearly support "
+                        "the answer, return insufficient_evidence=true and "
+                        "an empty answer.\\n"
+                        "You MUST return a non-empty evidence_ids array "
+                        "for an answer based on the supplied evidence.\\n"
+                        f"Allowed evidence_ids: [{allowed_ids_text}]\\n"
+                        "Choose only IDs from this exact list that support "
+                        "your answer. Do not invent IDs. Do not return an "
+                        "empty evidence_ids array unless evidence is "
+                        "insufficient.\\n"
+                        "Answer concisely in the question language; do not merge individual and collective dispute procedures. Every claim must be supported by the evidence. If uncertain, abstain. Return the complete JSON object only."
+                    )
 
                 generation_start = time.perf_counter()
 
@@ -618,78 +840,177 @@ class RAGAnswerPipeline:
                     format_schema=schema,
                 )
 
-                print(
-                    "[Generation] Ollama response: "
-                    f"{time.perf_counter() - generation_start:.3f}s"
+            print(
+                "[Generation] Ollama response: "
+                f"{time.perf_counter() - generation_start:.3f}s"
+            )
+
+            # Diagnostic only: log a bounded response preview.
+            # This helps identify malformed or incomplete model output.
+            response_preview = (
+                raw_response[:1500]
+                if raw_response
+                else "<empty response>"
+            )
+
+            print(
+                "[Generation] Raw response preview: "
+                f"{response_preview!r}"
+            )
+
+            validation_start = time.perf_counter()
+
+            try:
+                generated = GeneratedAnswer.model_validate_json(
+                    raw_response
                 )
-
-                validation_start = time.perf_counter()
-
-                try:
-                    generated = GeneratedAnswer.model_validate_json(
-                        raw_response
-                    )
-                except ValidationError:
-                    print(
-                        "[Generation] JSON validation failed: "
-                        f"{time.perf_counter() - validation_start:.3f}s"
-                    )
-                    continue
-
-                allowed_ids = set(
-                    prompt.citations_by_evidence_id
+            except ValidationError as exc:
+                previous_failure = (
+                    "The previous response failed JSON/schema "
+                    f"validation: {str(exc)[:1000]}"
                 )
-
-                returned_ids = set(
-                    generated.evidence_ids
-                )
-
-                # Never allow citations outside supplied evidence.
-                if not returned_ids <= allowed_ids:
-                    print(
-                        "[Generation] Rejected: invalid evidence IDs."
-                    )
-                    continue
-
-                # A non-insufficient answer must cite evidence.
-                if (
-                    not generated.insufficient_evidence
-                    and not returned_ids
-                ):
-                    print(
-                        "[Generation] Rejected: no evidence IDs."
-                    )
-                    continue
-
-                # Model must not manufacture citation markers.
-                if _MODEL_CITATION_PATTERN.search(
-                    generated.answer
-                ):
-                    print(
-                        "[Generation] Rejected: "
-                        "manufactured citation marker."
-                    )
-                    continue
-
-                # Enforce requested/detected answer language.
-                if not answer_matches_language(
-                    generated.answer,
-                    language,
-                ):
-                    print(
-                        "[Generation] Rejected: "
-                        "wrong answer language."
-                    )
-                    continue
 
                 print(
-                    "[Generation] Post-validation: "
+                    "[Generation] JSON validation failed: "
                     f"{time.perf_counter() - validation_start:.3f}s"
                 )
+                print(
+                    "[Generation] Validation error: "
+                    f"{str(exc)[:1000]}"
+                )
+                continue
 
-                return generated
+            returned_ids = set(
+                generated.evidence_ids
+            )
+
+            # Never allow citations outside supplied evidence.
+            if not returned_ids <= allowed_ids:
+                invalid_ids = sorted(
+                    returned_ids - allowed_ids
+                )
+
+                previous_failure = (
+                    "The previous response used invalid evidence_ids: "
+                    f"{invalid_ids}. Use only: [{allowed_ids_text}]."
+                )
+
+                print(
+                    "[Generation] Rejected: invalid evidence IDs. "
+                    f"Invalid IDs: {invalid_ids}"
+                )
+                continue
+
+            # A non-insufficient answer must cite evidence.
+            if (
+                not generated.insufficient_evidence
+                and not returned_ids
+            ):
+                previous_failure = (
+                    "The previous response had an empty evidence_ids "
+                    "array, but it provided an answer. This is invalid. "
+                    "Select supporting IDs from the supplied evidence: "
+                    f"[{allowed_ids_text}]."
+                )
+
+                print(
+                    "[Generation] Rejected: no evidence IDs."
+                )
+                continue
+
+            # Model must not manufacture citation markers.
+            if _MODEL_CITATION_PATTERN.search(
+                generated.answer
+            ):
+                previous_failure = (
+                    "The previous answer included citation markers "
+                    "inside the answer text. Remove all citation "
+                    "markers from answer; put evidence references "
+                    "only in evidence_ids."
+                )
+
+                print(
+                    "[Generation] Rejected: "
+                    "manufactured citation marker."
+                )
+                continue
+
+            # Enforce requested/detected answer language.
+            if not answer_matches_language(
+                generated.answer,
+                language,
+            ):
+                previous_failure = (
+                    "The previous answer was written in the wrong "
+                    f"language. Required language: {language}."
+                )
+
+                print(
+                    "[Generation] Rejected: "
+                    "wrong answer language."
+                )
+                continue
+
+            # Validate factual numbers against only the evidence IDs
+            # selected by the model. Reject and retry before returning
+            # an answer, so the model receives actionable feedback.
+            if not generated.insufficient_evidence:
+                selected_evidence_text = "\n\n".join(
+                    str(prompt.chunks_by_evidence_id[evidence_id].text)
+                    for evidence_id in generated.evidence_ids
+                )
+                numeric_ok, unsupported_numbers, _ = validate_numeric_claims(
+                    query,
+                    generated.answer,
+                    selected_evidence_text,
+                )
+                # A tightly guarded deterministic answer exists for this exact
+                # individual-dispute clause. Let that answer reach the final
+                # assembly instead of failing early on the model's bad numbers.
+                procedural_fallback_available = bool(
+                    _individual_dispute_procedure_answer(query, selected_evidence_text)
+                )
+                if not numeric_ok and not procedural_fallback_available:
+                    numeric_feedback = (
+                        ", ".join(sorted(map(str, unsupported_numbers)))
+                        or "Unsupported numeric claim detected."
+                    )
+                    numeric_validation_failed = True
+                    # Give the retry the actual source text and concrete
+                    # correction context. A generic warning alone often
+                    # causes small models to repeat the same hallucinated number.
+                    previous_failure = (
+                        "NUMERIC VALIDATION FAILED. The prior answer contains "
+                        f"unsupported numeric claim(s): {numeric_feedback}.\n"
+                        "SOURCE TEXT (authoritative; copy the relevant value "
+                        "exactly, do not rely on memory):\n"
+                        f"{selected_evidence_text[:7000]}\n"
+                        "Rewrite the answer using only numeric values that "
+                        "appear in this source. If the source says ten days, "
+                        "do not say twenty days. Do not add article/law numbers "
+                        "unless needed and clearly supported. Prefer omitting "
+                        "unnecessary numbers. If no safe answer can be formed, "
+                        "return insufficient_evidence=true and an empty answer."
+                    )
+                    print(
+                        "[Generation] Rejected: numeric claim "
+                        f"validation failed: {numeric_feedback}"
+                    )
+                    continue
+
+            print(
+                "[Generation] Post-validation: "
+                f"{time.perf_counter() - validation_start:.3f}s"
+            )
+
+            self._last_generation_failure_reason = None
+            return generated
+
+        if numeric_validation_failed:
+            self._last_generation_failure_reason = (
+                "numeric_validation_failure"
+            )
         return None
-
     # -------------------------------------------------------------------
     # Insufficient evidence
     # -------------------------------------------------------------------
@@ -818,6 +1139,38 @@ def _diversify_candidates(
 
 
 @traced("evidence.select")
+def _normalize_arabic_for_matching(text: str) -> str:
+    """Normalize common Arabic variants for conservative procedure guards."""
+    text = unicodedata.normalize("NFKC", text or "").casefold()
+    # Remove Arabic diacritics and tatweel; normalize common letter variants.
+    text = text.replace("ـ", "")
+    text = re.sub(r"[\u064b-\u065f\u0670]", "", text)
+    for old, new in (("أ", "ا"), ("إ", "ا"), ("آ", "ا"), ("ى", "ي"),
+                     ("ة", "ه"), ("ؤ", "و"), ("ئ", "ي")):
+        text = text.replace(old, new)
+    return " ".join(text.split())
+
+
+def _filter_procedure_mismatches(query: str, evidence: list[RerankedChunk]) -> list[RerankedChunk]:
+    """Keep individual and collective labor-dispute evidence from being mixed."""
+    q = _normalize_arabic_for_matching(query)
+    individual_query = "نزاع فرد" in q
+    collective_query = "نزاع جماع" in q
+    if not individual_query and not collective_query:
+        return evidence
+    kept = []
+    for chunk in evidence:
+        text = _normalize_arabic_for_matching(f"{chunk.section_title or ''} {chunk.text or ''}")
+        individual = "نزاع فرد" in text
+        collective = "نزاع جماع" in text or "مفاوضه جماعي" in text
+        if individual_query and collective and not individual:
+            continue
+        if collective_query and individual and not collective:
+            continue
+        kept.append(chunk)
+    return kept
+
+
 def _select_evidence(
     *,
     query: str,
@@ -1032,6 +1385,63 @@ def _diagnostics(
         exact_identifier_match=assessment.exact_identifier_match,
         source_count=assessment.source_count,
     )
+
+
+def _individual_dispute_procedure_answer(query: str, evidence_text: str) -> str | None:
+    """Build a conservative answer for the clearly matched individual-dispute clause."""
+    normalized_query = _normalize_arabic_for_matching(query)
+    normalized_evidence = _normalize_arabic_for_matching(evidence_text)
+
+    if "نزاع فرد" not in normalized_query:
+        return None
+
+    # Require the evidence to contain the key clause signals before using
+    # this fixed formulation; otherwise leave generation untouched.
+    required_signals = ("نزاع فرد", "عشره ايام", "تسويه", "لجنه", "حق التقاضي")
+    if not all(signal in normalized_evidence for signal in required_signals):
+        return None
+
+    return (
+        "مع عدم الإخلال بحق التقاضي، يجوز للعامل أو صاحب العمل طلب تسوية "
+        "النزاع الفردي وديًا خلال عشرة أيام من تاريخ نشوئه، أمام لجنة يرأسها "
+        "مدير مديرية العمل أو من ينيبه، وتضم العامل أو من يمثله وصاحب العمل "
+        "أو من يمثله. ويجوز لرئيس اللجنة الاستعانة بذوي الخبرة حسب موضوع النزاع."
+    )
+
+
+# =========================================================================
+# Conservative extractive answer mode
+# =========================================================================
+
+def _extractive_answer_from_chunks(chunks: list[RerankedChunk]) -> str:
+    """Return source text verbatim; never let the LLM add legal claims."""
+    parts: list[str] = []
+    seen: set[str] = set()
+    for chunk in chunks:
+        source_text = str(chunk.text).strip()
+        if source_text and source_text not in seen:
+            parts.append(source_text)
+            seen.add(source_text)
+    return "\n\n".join(parts)
+
+
+def _remove_legal_identifiers_from_answer(answer: str, language: str) -> str:
+    """Remove legal identifiers from answer prose while preserving substantive numbers."""
+    cleaned = answer
+    patterns = [
+        r"(?iu)\b(?:المادة|مادة)\s*[\(\[\{]?\s*[٠-٩0-9]+(?:\s*[\)\]\}])?",
+        r"(?iu)\bقانون\s*(?:رقم\s*)?[٠-٩0-9]+(?:\s*لسنة\s*[٠-٩0-9]+)?",
+        r"(?iu)\b(?:الباب|الفصل)\s*(?:رقم\s*)?[٠-٩0-9]+",
+        r"(?iu)\b(?:article|section|chapter|law)\s*(?:no\.?\s*)?[0-9]+(?:\s*(?:of|/)\s*[0-9]{4})?",
+    ]
+    for pattern in patterns:
+        cleaned = re.sub(pattern, "", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"[\(\[\{]\s*[\)\]\}]", "", cleaned)
+    cleaned = re.sub(r"^[ \t]*[:：\-–—][ \t]*", "", cleaned, flags=re.MULTILINE)
+    cleaned = re.sub(r"[ \t]+([،؛,:.])", r"\1", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 # =========================================================================

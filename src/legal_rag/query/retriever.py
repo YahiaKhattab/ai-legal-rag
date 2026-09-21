@@ -72,9 +72,12 @@ class LegalRetriever:
             payload = point.payload or {}
             chunk_id = str(payload.get("chunk_id", point.id))
 
+            # Prefer the normalized text produced by the ingestion pipeline.
+            # `original_text` may contain extraction artifacts (including
+            # Arabic presentation forms or visually reversed digits).
             text = (
-                payload.get("original_text")
-                or payload.get("normalized_text")
+                payload.get("normalized_text")
+                or payload.get("original_text")
                 or payload.get("text")
                 or ""
             )

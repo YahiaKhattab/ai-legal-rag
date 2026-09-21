@@ -16,6 +16,7 @@ from legal_rag.query.reranker import CrossEncoderReranker
 from legal_rag.query.retriever import LegalRetriever, RetrievalFilters
 from legal_rag.vector_store.qdrant import QdrantVectorStore
 
+
 _GENERATION_FAILURE_REASONS = {
     "invalid_structured_generation",
     "model_returned_no_valid_evidence",
@@ -40,6 +41,7 @@ def _build_pipeline(
         "rag.embedding_model": settings.embedding_model,
         "rag.rerank_model": settings.rerank_model,
     })
+
     store = QdrantVectorStore(
         url=settings.qdrant_url,
         api_key=settings.qdrant_api_key,
@@ -63,6 +65,7 @@ def _build_pipeline(
         base_url=settings.ollama_url,
         model=settings.generation_model,
         timeout_seconds=settings.generation_timeout_seconds,
+        max_tokens=settings.generation_max_tokens,
     )
 
     sufficiency_evaluator = EvidenceSufficiencyEvaluator(
@@ -91,7 +94,9 @@ def _build_pipeline(
 
 @tracing_process
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Query the AI Legal RAG system.")
+    parser = argparse.ArgumentParser(
+        description="Query the AI Legal RAG system."
+    )
 
     parser.add_argument(
         "query",
@@ -186,7 +191,9 @@ def main() -> None:
         print("\nEVIDENCE STATUS")
         print("-" * 70)
 
-        generation_failed = retrieval.reason in _GENERATION_FAILURE_REASONS
+        generation_failed = (
+            retrieval.reason in _GENERATION_FAILURE_REASONS
+        )
 
         if retrieval.sufficient:
             print("✓ Evidence found")
@@ -202,7 +209,10 @@ def main() -> None:
                 f"{retrieval.top_dense_score:.4f}"
             )
         elif generation_failed:
-            print("✗ Evidence was retrieved, but answer validation failed")
+            print(
+                "✗ Evidence was retrieved, "
+                "but answer validation failed"
+            )
         else:
             print("Dense Score      : N/A")
 
@@ -239,7 +249,10 @@ def main() -> None:
         ):
             print(f"\n[{index}] {excerpt.marker}")
 
-            print(f"Source  : {excerpt.source_file or excerpt.chunk_id}")
+            print(
+                f"Source  : "
+                f"{excerpt.source_file or excerpt.chunk_id}"
+            )
 
             if excerpt.page is not None:
                 print(f"Page    : {excerpt.page}")
