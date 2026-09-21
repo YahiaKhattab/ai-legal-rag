@@ -250,3 +250,6 @@ def test_pipeline_rejects_page_count_mismatch(
 
     with pytest.raises(ValueError, match="page-count mismatch"):
         _pipeline(ocr_engine=FakeOcrEngine()).ingest(pdf_path, tmp_path / "processed")
+
+
+#new
