@@ -1524,19 +1524,15 @@ def _validation_failure_message(
     unsupported_numbers: set[str],
 ) -> str:
 
-    numbers = ", ".join(
-        sorted(unsupported_numbers)
-    )
-
     if language == "ar":
         return (
-            "تعذر اعتماد الإجابة لأن أرقاماً "
-            f"غير مدعومة ظهرت فيها: {numbers}."
+            "لا توجد إجابة موثوقة متاحة لهذا السؤال "
+            "بناءً على المستندات الحالية."
         )
 
     return (
-        "The answer contained unsupported "
-        f"numeric values: {numbers}."
+        "No reliable answer is available for this question "
+        "based on the current documents."
     )
 
 
