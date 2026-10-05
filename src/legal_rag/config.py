@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     )
     generation_temperature: float = Field(default=0.1, ge=0, le=2)
     generation_retry_count: int = Field(default=1, ge=0, le=3)
+    generation_max_tokens: int = Field(default=384, ge=1, le=8000)
     maximum_context_characters: int = Field(default=12_000, ge=1_000, le=100_000)
 
     evidence_sufficiency_enabled: bool = True

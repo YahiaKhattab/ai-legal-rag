@@ -42,20 +42,21 @@ ENV HOME=/home/appuser \
     HF_HOME=/home/appuser/.cache/huggingface
 
 WORKDIR /app
+
 COPY --chown=appuser:appuser pyproject.toml ./
 COPY --chown=appuser:appuser src ./src
-COPY --chown=appuser:appuser legal_rag_api ./legal_rag_api
 
 RUN chown -R appuser:appuser /app
 
 USER appuser
 
-# Install the package with the OCR extra (paddleocr + paddlepaddle).
 RUN pip install \
     --no-cache-dir \
     --default-timeout=300 \
     --retries=10 \
     --user ".[ocr,phoenix]"
+
+COPY --chown=appuser:appuser legal_rag_api ./legal_rag_api
 
 # Pre-download models at build time so the container starts instantly and
 # does not depend on internet access at runtime for embedding/reranking.
